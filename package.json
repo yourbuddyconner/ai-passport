@@ -1,0 +1,10 @@
+{
+  "name": "ai-passport",
+  "private": true,
+  "scripts": {
+    "build": "cd web && npm run build",
+    "dev": "cd worker && wrangler dev",
+    "test": "cd worker && vitest run",
+    "deploy": "cd web && npm run build && cd ../worker && wrangler deploy"
+  }
+}

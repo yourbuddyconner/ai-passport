@@ -1,0 +1,97 @@
+export interface PassportCredentials {
+  id: string
+  slug: string
+  editToken: string
+  name: string
+}
+
+export interface CardData {
+  totalSessions: number
+  totalMessages: number
+  totalToolCalls: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  activeHours: number
+  activeDays: number
+  firstActivity: string | null
+  lastActivity: string | null
+  harnesses: string[]
+  models: string[]
+  topTools: Array<{ name: string; count: number }>
+  score: number
+  grade: string
+  scoreBreakdown: Record<string, number>
+}
+
+export interface PassportView {
+  passport: { slug: string; name: string; createdAt: string }
+  card: CardData
+}
+
+const STORAGE_KEY = 'ai-passport'
+
+export function loadCredentials(): PassportCredentials | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as PassportCredentials) : null
+  } catch {
+    return null
+  }
+}
+
+export function saveCredentials(creds: PassportCredentials) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(creds))
+}
+
+export function clearCredentials() {
+  localStorage.removeItem(STORAGE_KEY)
+}
+
+export async function createPassport(name: string): Promise<PassportCredentials> {
+  const res = await fetch('/api/passports', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? 'Failed to create passport')
+  const data = await res.json()
+  return { ...data, name }
+}
+
+export interface UploadResult {
+  fileName: string
+  ok: boolean
+  duplicate?: boolean
+  error?: string
+  harness?: string
+  toolCallCount?: number
+  messageCount?: number
+}
+
+export async function uploadTrace(
+  creds: PassportCredentials,
+  file: File,
+): Promise<UploadResult> {
+  const text = await file.text()
+  const res = await fetch(`/api/passports/${creds.id}/sessions`, {
+    method: 'POST',
+    headers: { 'x-edit-token': creds.editToken, 'content-type': 'text/plain' },
+    body: text,
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) return { fileName: file.name, ok: false, error: data?.error ?? `HTTP ${res.status}` }
+  return {
+    fileName: file.name,
+    ok: true,
+    duplicate: data.duplicate,
+    harness: data.session?.harness,
+    toolCallCount: data.session?.toolCallCount,
+    messageCount: data.session?.messageCount,
+  }
+}
+
+export async function fetchPassport(slug: string): Promise<PassportView> {
+  const res = await fetch(`/api/passports/slug/${slug}`)
+  if (!res.ok) throw new Error('Passport not found')
+  return res.json()
+}

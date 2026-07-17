@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-card: oklch(0.185 0.005 285);
+  --color-card-foreground: oklch(0.985 0 0);
+  --color-primary: oklch(0.75 0.18 155);
+  --color-primary-foreground: oklch(0.15 0.02 155);
+  --color-muted: oklch(0.24 0.005 285);
+  --color-muted-foreground: oklch(0.68 0.01 285);
+  --color-border: oklch(0.28 0.006 285);
+  --color-accent: oklch(0.26 0.008 285);
+  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: oklch(0.6 0.2 25);
+  --radius: 0.625rem;
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
