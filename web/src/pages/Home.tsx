@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Upload, FileJson, CheckCircle2, XCircle, Copy, ExternalLink, ShieldCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -54,6 +54,41 @@ export function Home() {
     [creds],
   )
 
+  // Catch drags anywhere on the page: a drop that misses the box should upload,
+  // never navigate the browser away.
+  useEffect(() => {
+    if (!creds) return
+    let depth = 0
+    const onDragEnter = (e: DragEvent) => {
+      e.preventDefault()
+      if (e.dataTransfer?.types.includes('Files')) {
+        depth++
+        setDragging(true)
+      }
+    }
+    const onDragOver = (e: DragEvent) => e.preventDefault()
+    const onDragLeave = () => {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDragging(false)
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      depth = 0
+      setDragging(false)
+      if (e.dataTransfer?.files.length) void handleFiles(e.dataTransfer.files)
+    }
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [creds, handleFiles])
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-16">
       <header className="mb-12 text-center">
@@ -108,20 +143,10 @@ export function Home() {
                   dragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
                 }`}
                 onClick={() => fileInput.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setDragging(true)
-                }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault()
-                  setDragging(false)
-                  void handleFiles(e.dataTransfer.files)
-                }}
               >
                 <Upload className="mb-3 h-8 w-8 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">
-                  {busy ? 'Uploading…' : 'Drop .jsonl traces here or click to browse'}
+                  {busy ? 'Uploading…' : 'Drop .jsonl traces anywhere on the page, or click to browse'}
                 </p>
                 <input
                   ref={fileInput}
