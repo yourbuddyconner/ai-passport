@@ -13,7 +13,7 @@ fn main() {
     println!("model loaded in {:.1}s", t0.elapsed().as_secs_f32());
 
     let trace = std::fs::read_to_string(trace_path).expect("read trace");
-    let excerpt = build_excerpt(&trace, 6000);
+    let excerpt = build_excerpt(&trace, 2200);
     println!("excerpt: {} chars", excerpt.len());
 
     let t1 = Instant::now();

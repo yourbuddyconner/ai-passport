@@ -8,7 +8,8 @@
 
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_qwen3::ModelWeights;
+use candle_transformers::models::quantized_llama::ModelWeights as LlamaWeights;
+use crate::deep_qwen3::ModelWeights as Qwen3Weights;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Mutex;
@@ -29,9 +30,33 @@ pub struct DeepAnalysis {
     pub model: String,
 }
 
+/// Architecture dispatch: both expose the same forward(input, offset) shape.
+pub enum Weights {
+    Qwen3(Qwen3Weights),
+    Llama(LlamaWeights),
+}
+
+impl Weights {
+    fn forward(&mut self, input: &Tensor, offset: usize) -> Result<Tensor, candle_core::Error> {
+        match self {
+            Weights::Qwen3(w) => w.forward(input, offset),
+            Weights::Llama(w) => w.forward(input, offset),
+        }
+    }
+
+    /// quantized_llama's causal mask can't handle multi-token chunks at a
+    /// nonzero offset; with its small vocab, one-shot prefill is affordable.
+    fn prefill_chunk(&self) -> usize {
+        match self {
+            Weights::Qwen3(_) => 32,
+            Weights::Llama(_) => usize::MAX,
+        }
+    }
+}
+
 /// The loaded model. Wrapped in a Mutex: candle's forward pass needs &mut.
 pub struct DeepModel {
-    weights: Mutex<ModelWeights>,
+    weights: Mutex<Weights>,
     tokenizer: Tokenizer,
     model_name: String,
 }
@@ -60,8 +85,22 @@ impl DeepModel {
             .get("general.name")
             .and_then(|v| v.to_string().ok().cloned())
             .unwrap_or_else(|| "qwen3".to_string());
-        let weights = ModelWeights::from_gguf(content, &mut file, &Device::Cpu)
-            .map_err(|e| DeepError(format!("load weights: {e}")))?;
+        let arch = content
+            .metadata
+            .get("general.architecture")
+            .and_then(|v| v.to_string().ok().cloned())
+            .unwrap_or_default();
+        let weights = match arch.as_str() {
+            "qwen3" => Weights::Qwen3(
+                Qwen3Weights::from_gguf(content, &mut file, &Device::Cpu)
+                    .map_err(|e| DeepError(format!("load weights: {e}")))?,
+            ),
+            "llama" => Weights::Llama(
+                LlamaWeights::from_gguf(content, &mut file, &Device::Cpu)
+                    .map_err(|e| DeepError(format!("load weights: {e}")))?,
+            ),
+            other => return Err(DeepError(format!("unsupported architecture: {other}"))),
+        };
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(err("load tokenizer"))?;
         Ok(Self {
             weights: Mutex::new(weights),
@@ -72,8 +111,20 @@ impl DeepModel {
 
     /// Run the classification prompt over a session excerpt.
     pub fn analyze(&self, excerpt: &str) -> Result<DeepAnalysis, DeepError> {
+        // Qwen3 wants an empty think block to skip reasoning; other ChatML
+        // models would just parrot those tags.
+        let assistant_prefix = {
+            let weights = self
+                .weights
+                .lock()
+                .map_err(|_| DeepError("model lock poisoned".to_string()))?;
+            match *weights {
+                Weights::Qwen3(_) => "<think>\n\n</think>\n\n",
+                Weights::Llama(_) => "",
+            }
+        };
         let prompt = format!(
-            "<|im_start|>system\nYou grade AI-assisted coding sessions. Reply with ONLY a JSON object: {{\"task_type\": one of debugging|feature|refactor|research|ops|other, \"prompt_specificity\": 1-5 (how specific and contextual the human's prompts are), \"steering\": 1-5 (how actively the human steers, corrects, verifies), \"summary\": one short sentence describing what was accomplished, no names or paths}}<|im_end|>\n<|im_start|>user\n{excerpt}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            "<|im_start|>system\nYou grade AI-assisted coding sessions. Reply with ONLY a JSON object: {{\"task_type\": one of debugging|feature|refactor|research|ops|other, \"prompt_specificity\": 1-5 (how specific and contextual the human's prompts are), \"steering\": 1-5 (how actively the human steers, corrects, verifies), \"summary\": one short sentence describing what was accomplished, no names or paths}}<|im_end|>\n<|im_start|>user\n{excerpt}<|im_end|>\n<|im_start|>assistant\n{assistant_prefix}"
         );
         let tokens = self
             .tokenizer
@@ -94,14 +145,23 @@ impl DeepModel {
             .token_to_id("<|im_end|>")
             .unwrap_or(151645);
 
-        // Prefill.
-        let input = Tensor::new(all_tokens.as_slice(), &device)
-            .and_then(|t| t.unsqueeze(0))
-            .map_err(|e| DeepError(format!("prefill tensor: {e}")))?;
-        let logits = weights
-            .forward(&input, 0)
-            .map_err(|e| DeepError(format!("prefill: {e}")))?;
-        let logits = logits
+        // Chunked prefill: bounded intermediate activations keep peak memory
+        // small enough for a 1 GB enclave.
+        let prefill_chunk = weights.prefill_chunk().min(all_tokens.len());
+        let mut last_logits = None;
+        let mut offset = 0;
+        for chunk in all_tokens.chunks(prefill_chunk) {
+            let input = Tensor::new(chunk, &device)
+                .and_then(|t| t.unsqueeze(0))
+                .map_err(|e| DeepError(format!("prefill tensor: {e}")))?;
+            let logits = weights
+                .forward(&input, offset)
+                .map_err(|e| DeepError(format!("prefill: {e}")))?;
+            offset += chunk.len();
+            last_logits = Some(logits);
+        }
+        let logits = last_logits
+            .ok_or_else(|| DeepError("empty prompt".to_string()))?
             .squeeze(0)
             .map_err(|e| DeepError(format!("squeeze: {e}")))?;
         let mut next = logits_processor
@@ -148,7 +208,7 @@ fn parse_verdict(output: &str, model_name: &str) -> Result<DeepAnalysis, DeepErr
         return Err(DeepError(format!("model returned no JSON: {output:.120}")));
     };
     let parsed: Value = serde_json::from_str(&output[start..=end])
-        .map_err(|e| DeepError(format!("model JSON invalid: {e}")))?;
+        .map_err(|e| DeepError(format!("model JSON invalid: {e} — output: {}", &output[start..=end])))?;
 
     const TASKS: [&str; 6] = ["debugging", "feature", "refactor", "research", "ops", "other"];
     let task = parsed

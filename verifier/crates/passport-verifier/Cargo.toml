@@ -24,6 +24,7 @@ sha2 = { workspace = true }
 candle-core = { version = "0.9", default-features = false }
 candle-transformers = { version = "0.9", default-features = false }
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
+candle-nn = "0.9"
 
 [lints]
 workspace = true

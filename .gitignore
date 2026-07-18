@@ -6,3 +6,5 @@ dist/
 .DS_Store
 verifier/out/
 models/
+bench-data/
+target-linux/
