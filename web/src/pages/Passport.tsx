@@ -19,6 +19,7 @@ import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { mrz } from '@/lib/mrz'
 import { fetchPassport, type PassportView } from '@/lib/api'
 import { verifyProofSignature } from '@/lib/verify'
+import { useCountUp } from '@/lib/useCountUp'
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -31,11 +32,22 @@ const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
 }
 
-function Entry({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
+function Entry({
+  icon: Icon,
+  label,
+  value,
+  format = String,
+}: {
+  icon: typeof Cpu
+  label: string
+  value: number
+  format?: (n: number) => string
+}) {
+  const shown = useCountUp(value, { initial: 0, duration: 900 })
   return (
     <div className="flex flex-col items-center rounded-md border border-border/70 bg-white/40 px-2 py-3">
       <Icon size={18} weight="duotone" className="mb-1.5 text-primary" aria-hidden="true" />
-      <span className="text-xl font-bold tabular-nums text-card-foreground">{value}</span>
+      <span className="text-xl font-bold tabular-nums text-card-foreground">{format(shown)}</span>
       <span className="text-[11px] text-muted-foreground">{label}</span>
     </div>
   )
@@ -173,12 +185,12 @@ export function Passport({ slug }: { slug: string }) {
 
         {/* Entries */}
         <div className="grid grid-cols-3 gap-2 px-7 pb-6 sm:grid-cols-6">
-          <Entry icon={TerminalWindow} label="sessions" value={String(card.totalSessions)} />
-          <Entry icon={ChatText} label="messages" value={fmt(card.totalMessages)} />
-          <Entry icon={Wrench} label="tool calls" value={fmt(card.totalToolCalls)} />
-          <Entry icon={Lightning} label="tokens out" value={fmt(card.totalOutputTokens)} />
-          <Entry icon={Clock} label="hours" value={String(card.activeHours)} />
-          <Entry icon={CalendarBlank} label="days" value={String(card.activeDays)} />
+          <Entry icon={TerminalWindow} label="sessions" value={card.totalSessions} />
+          <Entry icon={ChatText} label="messages" value={card.totalMessages} format={fmt} />
+          <Entry icon={Wrench} label="tool calls" value={card.totalToolCalls} format={fmt} />
+          <Entry icon={Lightning} label="tokens out" value={card.totalOutputTokens} format={fmt} />
+          <Entry icon={Clock} label="hours" value={card.activeHours} />
+          <Entry icon={CalendarBlank} label="days" value={card.activeDays} />
         </div>
 
         {/* Top tools */}

@@ -1,6 +1,9 @@
+import { useCountUp } from '@/lib/useCountUp'
+
 /** The embossed foil seal: score in the center, grade around the rim. */
 export function GradeSeal({ score, grade, size = 96 }: { score: number; grade: string; size?: number }) {
   const id = `seal-arc-${size}`
+  const shown = useCountUp(score, { initial: 0, duration: 900 })
   return (
     <div
       className="seal relative flex shrink-0 items-center justify-center rounded-full"
@@ -35,10 +38,11 @@ export function GradeSeal({ score, grade, size = 96 }: { score: number; grade: s
         </text>
       </svg>
       <span
-        className="relative font-bold tabular-nums text-[#2b2118]"
+        key={score}
+        className="stat-bump relative font-bold tabular-nums text-[#2b2118]"
         style={{ fontSize: size * 0.28 }}
       >
-        {score}
+        {shown}
       </span>
     </div>
   )

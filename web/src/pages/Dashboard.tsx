@@ -23,6 +23,7 @@ import { VaultModal } from '@/components/VaultModal'
 import { GradeSeal } from '@/components/GradeSeal'
 import { mrz } from '@/lib/mrz'
 import { logout, uploadTraceAsOwner, type Me, type UploadResult } from '@/lib/api'
+import { useCountUp } from '@/lib/useCountUp'
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -41,15 +42,20 @@ function StatTile({
   icon: Icon,
   label,
   value,
+  format = String,
 }: {
   icon: typeof Lightning
   label: string
-  value: string
+  value: number
+  format?: (n: number) => string
 }) {
+  const shown = useCountUp(value)
   return (
     <div className="flex flex-col items-center rounded-md bg-card p-4 text-card-foreground">
       <Icon size={20} weight="duotone" className="mb-2 text-primary" aria-hidden="true" />
-      <span className="text-2xl font-bold tabular-nums">{value}</span>
+      <span key={value} className="stat-bump text-2xl font-bold tabular-nums">
+        {format(shown)}
+      </span>
       <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   )
@@ -80,15 +86,14 @@ export function Dashboard({
       if (busyRef.current) return
       busyRef.current = true
       setBusy(true)
-      let anyNew = false
       for (const file of Array.from(files)) {
         const result = await uploadTraceAsOwner(me.passport.id, file)
-        if (result.ok && !result.duplicate) anyNew = true
         setResults((prev) => [{ ...result, key: `${file.name}-${Date.now()}` }, ...prev])
+        // Refresh after every accepted trace so the stats climb file by file.
+        if (result.ok && !result.duplicate) onRefresh()
       }
       setBusy(false)
       busyRef.current = false
-      if (anyNew) onRefresh()
     },
     [me.passport.id, onRefresh],
   )
@@ -196,10 +201,10 @@ export function Dashboard({
 
       {/* Stats */}
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatTile icon={TerminalWindow} label="sessions" value={String(me.card.totalSessions)} />
-        <StatTile icon={Wrench} label="tool calls" value={fmt(me.card.totalToolCalls)} />
-        <StatTile icon={Lightning} label="tokens out" value={fmt(me.card.totalOutputTokens)} />
-        <StatTile icon={CalendarBlank} label="active days" value={String(me.card.activeDays)} />
+        <StatTile icon={TerminalWindow} label="sessions" value={me.card.totalSessions} />
+        <StatTile icon={Wrench} label="tool calls" value={me.card.totalToolCalls} format={fmt} />
+        <StatTile icon={Lightning} label="tokens out" value={me.card.totalOutputTokens} format={fmt} />
+        <StatTile icon={CalendarBlank} label="active days" value={me.card.activeDays} />
       </div>
 
       {/* Upload */}
