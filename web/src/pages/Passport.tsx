@@ -216,7 +216,7 @@ export function Passport({ slug }: { slug: string }) {
               <p className="text-xs text-muted-foreground">
                 Signatures are checked locally with WebCrypto — no server trust required.{' '}
                 {view.verification.attestation === 'dev' &&
-                  'Proofs currently come from a development enclave; production adds an AWS Nitro attestation chain. '}
+                  'Proofs are signed inside a Turnkey Verifiable Cloud enclave; this app does not yet independently verify the AWS Nitro attestation chain. '}
                 <a href="/about" className="text-primary hover:underline">
                   How verification works →
                 </a>

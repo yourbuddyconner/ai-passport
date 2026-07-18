@@ -7,6 +7,7 @@
 // verifyAttestation() will check once TVC prod is wired up.
 
 import type { SessionStats } from './parsers'
+import { encryptToQuorumKey } from './qosCrypto'
 
 export interface AppProof {
   public_key: string
@@ -90,14 +91,10 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 /**
- * Analyze a trace via the enclave. Encrypts the envelope to the quorum key,
- * calls /analyze, then verifies the returned proof: signature over the exact
- * payload bytes, passport binding, and trace hash.
- *
- * NOTE: envelope encryption currently round-trips through the verifier's
- * /quorum_key/encrypt convenience endpoint. In the target design the browser
- * encrypts before upload so this Worker never sees plaintext; that swap only
- * changes where encrypt() runs, nothing else in this flow.
+ * Analyze a trace via the enclave. Encrypts the envelope to the quorum key
+ * locally (WebCrypto port of qos_p256 ECIES — only hex ciphertext ever leaves
+ * this Worker), calls /analyze, then verifies the returned proof: signature
+ * over the exact payload bytes, passport binding, and trace hash.
  */
 export async function analyzeViaEnclave(
   verifierUrl: string,
@@ -106,13 +103,10 @@ export async function analyzeViaEnclave(
 ): Promise<{ ciphertext: string; analysis: EnclaveAnalysis }> {
   const envelope = JSON.stringify({ passport_id: passportId, trace })
 
-  const encryptRes = await fetch(`${verifierUrl}/quorum_key/encrypt`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ plaintext: envelope }),
-  })
-  if (!encryptRes.ok) throw new VerifierError(`enclave encrypt failed: HTTP ${encryptRes.status}`)
-  const { ciphertext } = (await encryptRes.json()) as { ciphertext: string }
+  const keyRes = await fetch(`${verifierUrl}/quorum_public_key`)
+  if (!keyRes.ok) throw new VerifierError(`enclave key fetch failed: HTTP ${keyRes.status}`)
+  const { public_key } = (await keyRes.json()) as { public_key: string }
+  const ciphertext = await encryptToQuorumKey(public_key, new TextEncoder().encode(envelope))
 
   const analyzeRes = await fetch(`${verifierUrl}/analyze`, {
     method: 'POST',

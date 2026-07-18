@@ -51,3 +51,30 @@ make out/passport-verifier/index.json
 
 Deploy with the `tvc` CLI per the
 [quickstart](https://docs.turnkey.com/features/verifiable-cloud/quickstart).
+
+## Dev deployment (Turnkey internal)
+
+Deployed on TVC dev:
+
+- **Ingress**: `https://app-b6be5c24-6101-4b30-8ded-86e330edb46d.apps.tvc-dev.turnkey.engineering`
+- **App ID**: `b6be5c24-6101-4b30-8ded-86e330edb46d` · deployment `573d4a5c-…632d2` · 3/3 replicas
+- **Image**: `ghcr.io/yourbuddyconner/ai-passport-verifier:v0.1.0` (public), pivot digest in `deploy.json`
+- Login: `tvc login --api-base-url https://api.dev.turnkey.engineering` (undocumented but
+  first-class; preprod: `api.preprod.turnkey.engineering`)
+- The public domain is shown on the app page in the dev dashboard
+  (`app-<app-id>.apps.tvc-dev.turnkey.engineering`); `tvc deploy provisioning-details`
+  currently 500s on dev.
+- Redeploy: bump the image tag, `make out/passport-verifier/index.json` (needs a
+  `docker-container` buildx builder or the containerd image store), push with
+  `docker build --output type=registry`, update `deploy.json` digests,
+  `tvc deploy create` + `tvc deploy approve` (interactive TTY).
+
+### Gotchas discovered
+
+- The TVC ingress sits behind a Cloudflare WAF that 403s plaintext trace content in POST
+  bodies. This is why the Worker encrypts envelopes **locally** (`worker/src/qosCrypto.ts`, a
+  WebCrypto port of qos_p256 ECIES) — only hex ciphertext crosses the ingress. Do not
+  reintroduce a dependency on `/quorum_key/encrypt` for real traces.
+- qos_p256 dual public keys are `encrypt_public(65) || sign_public(65)`; signatures are
+  ECDSA P-256/SHA-256, raw r||s — both halves usable directly with WebCrypto.
+- `wrangler secret put` keeps a trailing newline if you pipe with `echo` — use `printf`.

@@ -9,11 +9,13 @@ function toHex(bytes: Uint8Array): string {
 // [encryption pubkey (65) || signing pubkey (65)], signature is raw r||s
 // ECDSA/SHA-256 over the payload bytes.
 async function makeProof(payload: string): Promise<{ proof: AppProof; tamper: AppProof }> {
-  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+  const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
     'sign',
     'verify',
-  ])
-  const signingPub = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
+  ])) as CryptoKeyPair
+  const signingPub = new Uint8Array(
+    (await crypto.subtle.exportKey('raw', pair.publicKey)) as ArrayBuffer,
+  )
   const dummyEncryptionPub = new Uint8Array(65).fill(4)
   const publicKey = new Uint8Array(130)
   publicKey.set(dummyEncryptionPub, 0)
