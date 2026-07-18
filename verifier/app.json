@@ -1,0 +1,20 @@
+{
+  "name": "ai-passport-verifier",
+  "quorumPublicKey": "04451028fc9d42cef6d8f2a3ebe17d65783c470dbc6f04663d500c12009930cf9b209e733f6ac6103cc28f07ecde2dbb55095738b828d6b7a55caf4ddf9d67f2ae047827dcd2325b8d58694c2ea14e8f1e1f8a36c84438d291ff9b1b067debdb3e2ba3822984cde8bed4de2c237bd323526da4961d368bcc63cbd2d37d00e936683e",
+  "enableEgress": false,
+  "manifestSetId": null,
+  "manifestSetParams": {
+    "name": "ai-passport-verifier-manifest-set",
+    "threshold": 1,
+    "newOperators": [
+      {
+        "name": "operator-1",
+        "publicKey": "0489461becbf03382d4202613bad6de34b949d23cf9d878ca834d78e87053d45a635b829402af0636cbdd2c92b24680638860e71fb0d6afcfa5150f2a3e6a5421704bc9be9ea88ce4c74f726d61bcb6fa8e8b3b8c441e0b86b9fc892259937d53fafa82841f46851d1d2c8e90b01b880326df2fa5bc2f3afb63bb6f20f9a2b9787ac"
+      }
+    ],
+    "existingOperatorIds": []
+  },
+  "shareSetId": null,
+  "shareSetParams": null,
+  "dangerousEnableDebugModeDeployments": false
+}
