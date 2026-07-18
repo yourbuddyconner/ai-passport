@@ -87,6 +87,7 @@ export interface UploadResult {
   fileName: string
   ok: boolean
   duplicate?: boolean
+  reprocessed?: boolean
   error?: string
   harness?: string
   toolCallCount?: number
@@ -144,12 +145,20 @@ export async function uploadTrace(
     fileName: file.name,
     ok: true,
     duplicate: data.duplicate,
+    reprocessed: data.reprocessed,
     harness: data.session?.harness,
     toolCallCount: data.session?.toolCallCount,
     messageCount: data.session?.messageCount,
     verification: data.verification,
     encryptedInBrowser: !!quorumKey,
   }
+}
+
+export async function deleteSession(passportId: string, externalId: string): Promise<boolean> {
+  const res = await fetch(`/api/passports/${passportId}/sessions/${externalId}`, {
+    method: 'DELETE',
+  })
+  return res.ok
 }
 
 export async function fetchPassport(slug: string): Promise<PassportView> {

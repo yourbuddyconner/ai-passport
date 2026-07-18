@@ -61,7 +61,10 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
         if line_type == Some("assistant")
             && let Some(message) = o.get("message")
         {
-            if let Some(model) = message.get("model").and_then(Value::as_str) {
+            // Claude Code marks system-generated lines with model "<synthetic>".
+            if let Some(model) = message.get("model").and_then(Value::as_str)
+                && !model.starts_with('<')
+            {
                 models.insert(model.to_string());
             }
             if let Some(usage) = message.get("usage") {

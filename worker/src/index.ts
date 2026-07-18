@@ -328,8 +328,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
     'SELECT id FROM sessions WHERE passport_id = ? AND external_id = ?',
   )
     .bind(id, stats.externalId)
-    .first()
-  if (existing) return c.json({ duplicate: true, session: stats, verification }, 200)
+    .first<{ id: string }>()
 
   // Keep the quorum-encrypted trace for future re-verification. Only the
   // enclave can decrypt it; the Worker and R2 never hold plaintext at rest.
@@ -340,6 +339,34 @@ app.post('/api/passports/:id/sessions', async (c) => {
   }
 
   const projectHash = stats.projectHash ?? (stats.cwd ? await hashCwd(stats.cwd) : null)
+
+  // Re-uploading a known session reprocesses it in place: fresh analysis,
+  // fresh proof. Lets users backfill newly added facts (e.g. repo hashes).
+  if (existing) {
+    await c.env.DB.prepare(
+      `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
+         tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
+         tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
+         project_hash = ? WHERE id = ?`,
+    )
+      .bind(
+        stats.startedAt,
+        stats.endedAt,
+        stats.messageCount,
+        stats.toolCallCount,
+        stats.inputTokens,
+        stats.outputTokens,
+        JSON.stringify(stats.models),
+        JSON.stringify(stats.toolCounts),
+        verification,
+        proof,
+        r2Key,
+        projectHash,
+        existing.id,
+      )
+      .run()
+    return c.json({ duplicate: false, reprocessed: true, session: stats, verification }, 200)
+  }
   await c.env.DB.prepare(
     `INSERT INTO sessions
       (id, passport_id, harness, external_id, started_at, ended_at,
@@ -368,6 +395,31 @@ app.post('/api/passports/:id/sessions', async (c) => {
     )
     .run()
   return c.json({ duplicate: false, session: stats, verification }, 201)
+})
+
+app.delete('/api/passports/:id/sessions/:externalId', async (c) => {
+  const id = c.req.param('id')
+  const passport = await c.env.DB.prepare(
+    'SELECT id, edit_token, user_id FROM passports WHERE id = ?',
+  )
+    .bind(id)
+    .first<{ id: string; edit_token: string; user_id: string | null }>()
+  if (!passport) return c.json({ error: 'passport not found' }, 404)
+  const user = await userFromCookie(c.env, c.req.header('cookie'))
+  const token = c.req.header('x-edit-token')
+  const isOwner = !!user && passport.user_id === user.id
+  if (!isOwner && (!token || token !== passport.edit_token))
+    return c.json({ error: 'not authorized for this passport' }, 403)
+
+  const row = await c.env.DB.prepare(
+    'SELECT id, r2_key FROM sessions WHERE passport_id = ? AND external_id = ?',
+  )
+    .bind(id, c.req.param('externalId'))
+    .first<{ id: string; r2_key: string | null }>()
+  if (!row) return c.json({ error: 'session not found' }, 404)
+  if (row.r2_key && c.env.TRACES) await c.env.TRACES.delete(row.r2_key)
+  await c.env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(row.id).run()
+  return c.json({ ok: true })
 })
 
 app.get('/api/passports/slug/:slug', async (c) => {

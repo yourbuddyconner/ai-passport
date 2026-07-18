@@ -51,7 +51,8 @@ export function parseClaudeCode(lines: unknown[]): SessionStats {
     if (o.type !== 'user' && o.type !== 'assistant') continue
     stats.messageCount++
     if (o.type === 'assistant' && o.message) {
-      if (o.message.model) models.add(o.message.model)
+      // Claude Code marks system-generated lines with model "<synthetic>".
+      if (o.message.model && !o.message.model.startsWith('<')) models.add(o.message.model)
       const u = o.message.usage
       if (u) {
         stats.inputTokens += u.input_tokens ?? 0

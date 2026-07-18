@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   FolderOpen,
+  Trash,
   UploadSimple,
   FileCode,
   CheckCircle,
@@ -24,7 +25,7 @@ import { VaultModal } from '@/components/VaultModal'
 import { Endorsements } from '@/components/Endorsements'
 import { GradeSeal } from '@/components/GradeSeal'
 import { mrz } from '@/lib/mrz'
-import { logout, uploadTraceAsOwner, type Me, type UploadResult } from '@/lib/api'
+import { deleteSession, logout, uploadTraceAsOwner, type Me, type UploadResult } from '@/lib/api'
 import { useCountUp } from '@/lib/useCountUp'
 
 function fmt(n: number): string {
@@ -78,6 +79,7 @@ export function Dashboard({
   const [dragging, setDragging] = useState(false)
   const [copied, setCopied] = useState(false)
   const [vaultOpen, setVaultOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const busyRef = useRef(false)
 
@@ -316,7 +318,7 @@ export function Dashboard({
                     {r.ok
                       ? r.duplicate
                         ? 'duplicate — skipped'
-                        : `${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tools${
+                        : `${r.reprocessed ? 'reprocessed · ' : ''}${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tools${
                             r.verification === 'enclave'
                               ? r.encryptedInBrowser
                                 ? ' · end-to-end encrypted'
@@ -369,9 +371,9 @@ export function Dashboard({
                   <span className="hidden tabular-nums text-muted-foreground sm:inline">
                     {s.messageCount} msgs · {s.toolCallCount} tools
                   </span>
-                  <span className="ml-auto flex items-center gap-1 text-xs">
+                  <span className="ml-auto flex items-center gap-2 text-xs">
                     {s.verification === 'enclave' ? (
-                      <>
+                      <span className="flex items-center gap-1">
                         <SealCheck
                           size={14}
                           weight="duotone"
@@ -379,9 +381,37 @@ export function Dashboard({
                           aria-hidden="true"
                         />
                         <span className="text-verify">enclave</span>
-                      </>
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">format</span>
+                    )}
+                    {confirmDelete === s.externalId ? (
+                      <span className="flex items-center gap-1">
+                        <button
+                          className="rounded border border-destructive/50 px-1.5 py-0.5 font-medium text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
+                          onClick={async () => {
+                            if (await deleteSession(me.passport.id, s.externalId)) onRefresh()
+                            setConfirmDelete(null)
+                          }}
+                        >
+                          Remove
+                        </button>
+                        <button
+                          className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foil"
+                          onClick={() => setConfirmDelete(null)}
+                        >
+                          Keep
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        aria-label={`Remove session from ${s.startedAt?.slice(0, 10) ?? 'unknown date'}`}
+                        title="Remove this session"
+                        className="rounded p-1 text-muted-foreground/60 transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
+                        onClick={() => setConfirmDelete(s.externalId)}
+                      >
+                        <Trash size={14} weight="duotone" aria-hidden="true" />
+                      </button>
                     )}
                   </span>
                 </li>
