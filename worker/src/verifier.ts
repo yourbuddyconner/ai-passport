@@ -90,24 +90,25 @@ async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-/**
- * Analyze a trace via the enclave. Encrypts the envelope to the quorum key
- * locally (WebCrypto port of qos_p256 ECIES — only hex ciphertext ever leaves
- * this Worker), calls /analyze, then verifies the returned proof: signature
- * over the exact payload bytes, passport binding, and trace hash.
- */
-export async function analyzeViaEnclave(
-  verifierUrl: string,
-  passportId: string,
-  trace: string,
-): Promise<{ ciphertext: string; analysis: EnclaveAnalysis }> {
-  const envelope = JSON.stringify({ passport_id: passportId, trace })
-
+/** Fetch the enclave's quorum public key (130-byte dual key, hex). */
+export async function fetchQuorumPublicKey(verifierUrl: string): Promise<string> {
   const keyRes = await fetch(`${verifierUrl}/quorum_public_key`)
   if (!keyRes.ok) throw new VerifierError(`enclave key fetch failed: HTTP ${keyRes.status}`)
   const { public_key } = (await keyRes.json()) as { public_key: string }
-  const ciphertext = await encryptToQuorumKey(public_key, new TextEncoder().encode(envelope))
+  return public_key
+}
 
+/**
+ * Send an already-encrypted envelope to the enclave and verify the returned
+ * proof: signature over the exact payload bytes and the passport binding.
+ * (When the caller encrypted client-side we never see the plaintext, so the
+ * trace hash in the signed payload is recorded, not re-derived.)
+ */
+export async function analyzeCiphertext(
+  verifierUrl: string,
+  passportId: string,
+  ciphertext: string,
+): Promise<EnclaveAnalysis> {
   const analyzeRes = await fetch(`${verifierUrl}/analyze`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -115,7 +116,7 @@ export async function analyzeViaEnclave(
   })
   if (!analyzeRes.ok) {
     const body = (await analyzeRes.json().catch(() => null)) as { error?: string } | null
-    // 422 = the enclave parsed and rejected the trace; surface as a user error.
+    // 400 = bad envelope/decrypt, 422 = the enclave parsed and rejected the trace.
     throw new VerifierError(body?.error ?? `enclave analyze failed`, analyzeRes.status)
   }
   const result = (await analyzeRes.json()) as {
@@ -132,31 +133,44 @@ export async function analyzeViaEnclave(
     throw new VerifierError('enclave proof signature did not verify')
   const signed = JSON.parse(result.proof.payload) as typeof result.payload
   if (signed.passport_id !== passportId)
-    throw new VerifierError('enclave proof is bound to a different passport')
-  if (signed.trace_sha256 !== (await sha256Hex(trace)))
-    throw new VerifierError('enclave proof trace hash mismatch')
+    throw new VerifierError('enclave proof is bound to a different passport', 422)
 
   const s = signed.stats
   return {
-    ciphertext,
-    analysis: {
-      stats: {
-        harness: s.harness as SessionStats['harness'],
-        externalId: s.external_id,
-        startedAt: s.started_at,
-        endedAt: s.ended_at,
-        messageCount: Number(s.message_count),
-        toolCallCount: Number(s.tool_call_count),
-        inputTokens: Number(s.input_tokens),
-        outputTokens: Number(s.output_tokens),
-        models: s.models,
-        toolCounts: Object.fromEntries(
-          Object.entries(s.tool_counts).map(([k, v]) => [k, Number(v)]),
-        ),
-      },
-      traceSha256: signed.trace_sha256,
-      analyzedAt: Number(signed.analyzed_at),
-      proof: result.proof,
+    stats: {
+      harness: s.harness as SessionStats['harness'],
+      externalId: s.external_id,
+      startedAt: s.started_at,
+      endedAt: s.ended_at,
+      messageCount: Number(s.message_count),
+      toolCallCount: Number(s.tool_call_count),
+      inputTokens: Number(s.input_tokens),
+      outputTokens: Number(s.output_tokens),
+      models: s.models,
+      toolCounts: Object.fromEntries(Object.entries(s.tool_counts).map(([k, v]) => [k, Number(v)])),
     },
+    traceSha256: signed.trace_sha256,
+    analyzedAt: Number(signed.analyzed_at),
+    proof: result.proof,
   }
+}
+
+/**
+ * Analyze a plaintext trace via the enclave (Worker-side encryption path,
+ * used when the client didn't encrypt). Additionally re-derives and checks
+ * the trace hash against the signed payload.
+ */
+export async function analyzeViaEnclave(
+  verifierUrl: string,
+  passportId: string,
+  trace: string,
+): Promise<{ ciphertext: string; analysis: EnclaveAnalysis }> {
+  const envelope = JSON.stringify({ passport_id: passportId, trace })
+  const publicKey = await fetchQuorumPublicKey(verifierUrl)
+  const ciphertext = await encryptToQuorumKey(publicKey, new TextEncoder().encode(envelope))
+
+  const analysis = await analyzeCiphertext(verifierUrl, passportId, ciphertext)
+  if (analysis.traceSha256 !== (await sha256Hex(trace)))
+    throw new VerifierError('enclave proof trace hash mismatch')
+  return { ciphertext, analysis }
 }

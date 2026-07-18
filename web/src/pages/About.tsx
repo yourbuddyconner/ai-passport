@@ -55,11 +55,12 @@ export function About() {
           <CardTitle>The architecture</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <Step icon={Lock} title="Traces are encrypted to the enclave">
-            Session traces are encrypted to the enclave's <strong>quorum key</strong> before
-            analysis. The application storage layer (Cloudflare D1/R2) holds only ciphertext and
-            aggregate statistics — the plaintext trace, with your code and prompts in it, is
-            only ever visible inside the enclave.
+          <Step icon={Lock} title="Traces are encrypted in your browser">
+            Session traces are encrypted <strong>in your browser</strong> to the enclave's{' '}
+            <strong>quorum key</strong> before upload (ECDH P-256 + AES-256-GCM, the qos_p256
+            scheme). The application server and storage layer (Cloudflare Workers/D1/R2) only
+            ever see ciphertext — the plaintext trace, with your code and prompts in it, exists
+            only on your machine and inside the enclave.
           </Step>
           <Step icon={Cpu} title="Analysis runs inside a TEE">
             The parser and statistics extractor run inside an AWS Nitro Enclave managed by

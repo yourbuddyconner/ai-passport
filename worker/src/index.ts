@@ -1,7 +1,13 @@
 import { Hono } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
-import { analyzeViaEnclave, attestationMode, VerifierError } from './verifier'
+import {
+  analyzeCiphertext,
+  analyzeViaEnclave,
+  attestationMode,
+  fetchQuorumPublicKey,
+  VerifierError,
+} from './verifier'
 
 type Env = {
   DB: D1Database
@@ -41,6 +47,35 @@ app.post('/api/passports', async (c) => {
   return c.json({ id, slug, editToken }, 201)
 })
 
+// Quorum public key for browser-side envelope encryption. Proxied (and
+// cached) so the browser needs no CORS access to the enclave. 404 when no
+// verifier is configured — the client then uses the plaintext upload path.
+let cachedQuorumKey: { url: string; key: string } | null = null
+app.get('/api/verifier/public-key', async (c) => {
+  if (!c.env.VERIFIER_URL) return c.json({ error: 'no verifier configured' }, 404)
+  try {
+    if (cachedQuorumKey?.url !== c.env.VERIFIER_URL) {
+      cachedQuorumKey = {
+        url: c.env.VERIFIER_URL,
+        key: await fetchQuorumPublicKey(c.env.VERIFIER_URL),
+      }
+    }
+    return c.json({ publicKey: cachedQuorumKey.key })
+  } catch (e) {
+    console.error('quorum key fetch failed:', e)
+    return c.json({ error: 'verifier unreachable' }, 502)
+  }
+})
+
+// Lightweight existence check so clients can validate saved credentials.
+app.get('/api/passports/:id', async (c) => {
+  const passport = await c.env.DB.prepare('SELECT id, slug, name FROM passports WHERE id = ?')
+    .bind(c.req.param('id'))
+    .first<{ id: string; slug: string; name: string }>()
+  if (!passport) return c.json({ error: 'passport not found' }, 404)
+  return c.json({ id: passport.id, slug: passport.slug, name: passport.name })
+})
+
 app.post('/api/passports/:id/sessions', async (c) => {
   const id = c.req.param('id')
   const token = c.req.header('x-edit-token')
@@ -51,36 +86,59 @@ app.post('/api/passports/:id/sessions', async (c) => {
   if (!token || token !== passport.edit_token) return c.json({ error: 'invalid edit token' }, 403)
 
   const len = Number(c.req.header('content-length') ?? 0)
-  if (len > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
+  if (len > MAX_UPLOAD_BYTES * 3) return c.json({ error: 'file too large (max 25 MB)' }, 413)
   const text = await c.req.text()
-  if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
 
-  // Prefer the TVC enclave coprocessor; fall back to in-Worker parsing so the
-  // app keeps working when no verifier is configured or reachable.
   let stats: SessionStats | null = null
   let verification: 'enclave' | 'format' = 'format'
   let proof: string | null = null
   let ciphertext: string | null = null
-  if (c.env.VERIFIER_URL) {
+
+  // End-to-end path: the browser encrypted {passport_id, trace} to the quorum
+  // key itself and sends only ciphertext — this Worker never sees plaintext.
+  // No fallback is possible (there is nothing to parse locally); errors are
+  // surfaced to the client.
+  if (c.req.header('content-type')?.includes('application/json')) {
+    const body = JSON.parse(text) as { ciphertext?: string }
+    if (!body.ciphertext || !/^[0-9a-f]+$/.test(body.ciphertext))
+      return c.json({ error: 'ciphertext (hex) is required' }, 400)
+    if (!c.env.VERIFIER_URL) return c.json({ error: 'no verifier configured' }, 503)
     try {
-      const result = await analyzeViaEnclave(c.env.VERIFIER_URL, id, text)
-      stats = result.analysis.stats
+      const analysis = await analyzeCiphertext(c.env.VERIFIER_URL, id, body.ciphertext)
+      stats = analysis.stats
       verification = 'enclave'
-      proof = JSON.stringify(result.analysis.proof)
-      ciphertext = result.ciphertext
+      proof = JSON.stringify(analysis.proof)
+      ciphertext = body.ciphertext
     } catch (e) {
-      // 422 = the enclave parsed the trace and rejected it as invalid.
-      if (e instanceof VerifierError && e.status === 422)
-        return c.json({ error: e.message }, 422)
-      console.error('enclave analysis failed, falling back to local parse:', e)
-    }
-  }
-  if (!stats) {
-    try {
-      stats = parseTrace(text)
-    } catch (e) {
-      if (e instanceof ParseError) return c.json({ error: e.message }, 422)
+      if (e instanceof VerifierError) return c.json({ error: e.message }, e.status as 400)
       throw e
+    }
+  } else {
+    // Plaintext path: prefer the enclave (Worker-side encryption); fall back
+    // to in-Worker parsing so the app keeps working when no verifier is
+    // configured or reachable.
+    if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
+    if (c.env.VERIFIER_URL) {
+      try {
+        const result = await analyzeViaEnclave(c.env.VERIFIER_URL, id, text)
+        stats = result.analysis.stats
+        verification = 'enclave'
+        proof = JSON.stringify(result.analysis.proof)
+        ciphertext = result.ciphertext
+      } catch (e) {
+        // 422 = the enclave parsed the trace and rejected it as invalid.
+        if (e instanceof VerifierError && e.status === 422)
+          return c.json({ error: e.message }, 422)
+        console.error('enclave analysis failed, falling back to local parse:', e)
+      }
+    }
+    if (!stats) {
+      try {
+        stats = parseTrace(text)
+      } catch (e) {
+        if (e instanceof ParseError) return c.json({ error: e.message }, 422)
+        throw e
+      }
     }
   }
 

@@ -6,10 +6,12 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import {
+  clearCredentials,
   createPassport,
   loadCredentials,
   saveCredentials,
   uploadTrace,
+  validateCredentials,
   type PassportCredentials,
   type UploadResult,
 } from '@/lib/api'
@@ -25,6 +27,21 @@ export function Home() {
   const fileInput = useRef<HTMLInputElement>(null)
 
   const cardUrl = creds ? `${location.origin}/p/${creds.slug}` : ''
+
+  // Saved credentials can outlive the passport (e.g. the database was reset).
+  // Validate once on load and clear them so the UI returns to the create form.
+  useEffect(() => {
+    if (!creds) return
+    void validateCredentials(creds).then((ok) => {
+      if (!ok) {
+        clearCredentials()
+        setCreds(null)
+        setResults([])
+        setError('Your saved passport no longer exists — create a new one below.')
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -174,7 +191,7 @@ export function Home() {
                         {r.ok
                           ? r.duplicate
                             ? 'duplicate — skipped'
-                            : `${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tool calls${r.verification === 'enclave' ? ' · enclave-verified' : ''}`
+                            : `${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tool calls${r.verification === 'enclave' ? (r.encryptedInBrowser ? ' · end-to-end encrypted' : ' · enclave-verified') : ''}`
                           : r.error}
                       </span>
                     </li>
