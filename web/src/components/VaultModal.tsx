@@ -44,7 +44,8 @@ const DEPLOYMENT_LABELS: Record<string, string> = {
   enclave: 'runtime',
   egress: 'egress',
   debugMode: 'debug mode',
-  source: 'template source',
+  repository: 'source repository',
+  template: 'built from template',
 }
 
 interface Layer {

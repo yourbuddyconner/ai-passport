@@ -19,5 +19,6 @@ export const VERIFIER_DEPLOYMENT = {
   enclave: 'AWS Nitro Enclave · QuorumOS',
   egress: 'disabled',
   debugMode: 'disabled',
-  source: 'https://github.com/tkhq/tvc-template',
+  repository: 'https://github.com/yourbuddyconner/ai-passport',
+  template: 'https://github.com/tkhq/tvc-template',
 } as const
