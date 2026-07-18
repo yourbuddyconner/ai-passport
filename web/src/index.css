@@ -20,3 +20,24 @@ body {
   @apply bg-background text-foreground antialiased;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+@keyframes vault-seal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.vault-layer {
+  animation: vault-seal 0.45s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vault-layer {
+    animation: none;
+  }
+}

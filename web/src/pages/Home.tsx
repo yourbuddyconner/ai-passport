@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Upload, FileJson, CheckCircle2, XCircle, Copy, ExternalLink, ShieldCheck } from 'lucide-react'
+import { Upload, FileJson, CheckCircle2, XCircle, Copy, ExternalLink, ShieldCheck, Lock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
+import { VaultModal } from '@/components/VaultModal'
 import {
   clearCredentials,
   createPassport,
@@ -21,10 +22,12 @@ export function Home() {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [results, setResults] = useState<UploadResult[]>([])
+  const [results, setResults] = useState<Array<UploadResult & { key?: string }>>([])
   const [dragging, setDragging] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [vaultOpen, setVaultOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const busyRef = useRef(false)
 
   const cardUrl = creds ? `${location.origin}/p/${creds.slug}` : ''
 
@@ -61,13 +64,15 @@ export function Home() {
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
-      if (!creds) return
+      if (!creds || busyRef.current) return
+      busyRef.current = true
       setBusy(true)
       for (const file of Array.from(files)) {
         const result = await uploadTrace(creds, file)
-        setResults((prev) => [result, ...prev])
+        setResults((prev) => [{ ...result, key: `${file.name}-${Date.now()}` }, ...prev])
       }
       setBusy(false)
+      busyRef.current = false
     },
     [creds],
   )
@@ -135,7 +140,7 @@ export function Home() {
                 maxLength={80}
               />
               <Button type="submit" disabled={busy || !name.trim()}>
-                {busy ? 'Creating…' : 'Create'}
+                {busy ? 'Creating…' : 'Create passport'}
               </Button>
             </form>
             {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
@@ -147,7 +152,17 @@ export function Home() {
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span>{creds.name}'s passport</span>
-                <Badge variant="secondary">{creds.slug}</Badge>
+                <span className="flex items-center gap-2">
+                  <Badge variant="secondary">{creds.slug}</Badge>
+                  <button
+                    onClick={() => setVaultOpen(true)}
+                    aria-label="Inspect the vault"
+                    title="Something is protecting your traces…"
+                    className="group rounded-md p-1.5 text-muted-foreground transition-all hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <Lock className="h-4 w-4 transition-transform group-hover:-rotate-12 group-hover:scale-110" />
+                  </button>
+                </span>
               </CardTitle>
               <CardDescription>
                 Drop session trace files (.jsonl) below. Claude Code traces live in{' '}
@@ -157,10 +172,19 @@ export function Home() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div
-                className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 transition-colors ${
+                className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
                   dragging ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
                 }`}
+                role="button"
+                tabIndex={0}
+                aria-label="Choose trace files to upload"
                 onClick={() => fileInput.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    fileInput.current?.click()
+                  }
+                }}
               >
                 <Upload className="mb-3 h-8 w-8 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">
@@ -179,7 +203,7 @@ export function Home() {
               {results.length > 0 && (
                 <ul className="space-y-2">
                   {results.map((r, i) => (
-                    <li key={i} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
+                    <li key={r.key ?? i} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
                       {r.ok ? (
                         <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
                       ) : (
@@ -201,13 +225,15 @@ export function Home() {
             </CardContent>
           </Card>
 
+          <VaultModal open={vaultOpen} onClose={() => setVaultOpen(false)} creds={creds} />
+
           <Card>
             <CardHeader>
               <CardTitle>Share your card</CardTitle>
               <CardDescription>Anyone with this link can view your verified AI-use card.</CardDescription>
             </CardHeader>
             <CardContent className="flex items-center gap-3">
-              <Input readOnly value={cardUrl} className="font-mono text-xs" />
+              <Input readOnly value={cardUrl} onFocus={(e) => e.currentTarget.select()} className="font-mono text-xs" />
               <Button
                 variant="outline"
                 onClick={() => {

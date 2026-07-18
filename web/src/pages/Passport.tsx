@@ -68,8 +68,11 @@ export function Passport({ slug }: { slug: string }) {
 
   if (error)
     return (
-      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
-        {error}
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-muted-foreground">
+        <p>{error}</p>
+        <a href="/" className="text-sm text-primary hover:underline">
+          Build your own AI Passport →
+        </a>
       </div>
     )
   if (!view)
