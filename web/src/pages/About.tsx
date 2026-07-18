@@ -127,10 +127,12 @@ export function About() {
             read.
           </p>
           <p className="rounded-md border border-border bg-muted/50 p-3">
-            <strong className="text-foreground">Current status:</strong> this deployment runs the
-            verifier in development mode (local enclave app, development keys). Proof signatures
-            are real and verifiable; the attestation chain to AWS Nitro lands when the verifier
-            moves onto TVC production. Cards indicate which mode produced each proof.
+            <strong className="text-foreground">Current status:</strong> the verifier runs on
+            Turnkey Verifiable Cloud (dev environment) inside real AWS Nitro Enclaves. Traces
+            are encrypted end-to-end in your browser, and proof signatures are real and
+            verifiable. What's not yet wired up: this app does not independently verify the
+            Nitro attestation document chaining the signing keys to the enclave image — that
+            check is the remaining step to full attestation, and cards say so.
           </p>
         </CardContent>
       </Card>
