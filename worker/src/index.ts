@@ -270,7 +270,12 @@ app.post('/api/passports/:id/sessions', async (c) => {
   // No fallback is possible (there is nothing to parse locally); errors are
   // surfaced to the client.
   if (c.req.header('content-type')?.includes('application/json')) {
-    const body = JSON.parse(text) as { ciphertext?: string }
+    let body: { ciphertext?: string }
+    try {
+      body = JSON.parse(text) as { ciphertext?: string }
+    } catch {
+      return c.json({ error: 'request body is not valid JSON' }, 400)
+    }
     if (!body.ciphertext || !/^[0-9a-f]+$/.test(body.ciphertext))
       return c.json({ error: 'ciphertext (hex) is required' }, 400)
     if (!c.env.VERIFIER_URL) return c.json({ error: 'no verifier configured' }, 503)

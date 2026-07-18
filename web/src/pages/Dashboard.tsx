@@ -71,6 +71,7 @@ export function Dashboard({
   onSignOut: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [results, setResults] = useState<Array<UploadResult & { key: string }>>([])
   const [dragging, setDragging] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -86,14 +87,31 @@ export function Dashboard({
       if (busyRef.current) return
       busyRef.current = true
       setBusy(true)
-      for (const file of Array.from(files)) {
-        const result = await uploadTraceAsOwner(me.passport.id, file)
-        setResults((prev) => [{ ...result, key: `${file.name}-${Date.now()}` }, ...prev])
-        // Refresh after every accepted trace so the stats climb file by file.
-        if (result.ok && !result.duplicate) onRefresh()
+      const batch = Array.from(files)
+      setProgress({ done: 0, total: batch.length })
+      try {
+        for (const [i, file] of batch.entries()) {
+          // One bad file must never kill the batch or wedge the uploader.
+          let result: UploadResult
+          try {
+            result = await uploadTraceAsOwner(me.passport.id, file)
+          } catch (e) {
+            result = {
+              fileName: file.name,
+              ok: false,
+              error: e instanceof Error ? e.message : 'upload failed — try this file again',
+            }
+          }
+          setResults((prev) => [{ ...result, key: `${file.name}-${Date.now()}` }, ...prev])
+          setProgress({ done: i + 1, total: batch.length })
+          // Refresh after every accepted trace so the stats climb file by file.
+          if (result.ok && !result.duplicate) onRefresh()
+        }
+      } finally {
+        setBusy(false)
+        busyRef.current = false
+        setProgress(null)
       }
-      setBusy(false)
-      busyRef.current = false
     },
     [me.passport.id, onRefresh],
   )
@@ -245,8 +263,12 @@ export function Dashboard({
               className="mb-2 text-muted-foreground"
               aria-hidden="true"
             />
-            <p className="text-sm text-muted-foreground">
-              {busy ? 'Sealing & uploading…' : 'Drop .jsonl traces anywhere, or click to browse'}
+            <p className="text-sm text-muted-foreground" aria-live="polite">
+              {busy
+                ? progress && progress.total > 1
+                  ? `Sealing & uploading… ${progress.done} of ${progress.total}`
+                  : 'Sealing & uploading…'
+                : 'Drop .jsonl traces anywhere, or click to browse'}
             </p>
             <input
               ref={fileInput}
