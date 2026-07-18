@@ -1,10 +1,14 @@
 import { Hono } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
+import { analyzeViaEnclave, attestationMode, VerifierError } from './verifier'
 
 type Env = {
   DB: D1Database
   ASSETS: Fetcher
+  TRACES?: R2Bucket
+  VERIFIER_URL?: string
+  VERIFIER_ATTESTED?: string
 }
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -51,12 +55,33 @@ app.post('/api/passports/:id/sessions', async (c) => {
   const text = await c.req.text()
   if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
 
-  let stats: SessionStats
-  try {
-    stats = parseTrace(text)
-  } catch (e) {
-    if (e instanceof ParseError) return c.json({ error: e.message }, 422)
-    throw e
+  // Prefer the TVC enclave coprocessor; fall back to in-Worker parsing so the
+  // app keeps working when no verifier is configured or reachable.
+  let stats: SessionStats | null = null
+  let verification: 'enclave' | 'format' = 'format'
+  let proof: string | null = null
+  let ciphertext: string | null = null
+  if (c.env.VERIFIER_URL) {
+    try {
+      const result = await analyzeViaEnclave(c.env.VERIFIER_URL, id, text)
+      stats = result.analysis.stats
+      verification = 'enclave'
+      proof = JSON.stringify(result.analysis.proof)
+      ciphertext = result.ciphertext
+    } catch (e) {
+      // 422 = the enclave parsed the trace and rejected it as invalid.
+      if (e instanceof VerifierError && e.status === 422)
+        return c.json({ error: e.message }, 422)
+      console.error('enclave analysis failed, falling back to local parse:', e)
+    }
+  }
+  if (!stats) {
+    try {
+      stats = parseTrace(text)
+    } catch (e) {
+      if (e instanceof ParseError) return c.json({ error: e.message }, 422)
+      throw e
+    }
   }
 
   const existing = await c.env.DB.prepare(
@@ -64,14 +89,22 @@ app.post('/api/passports/:id/sessions', async (c) => {
   )
     .bind(id, stats.externalId)
     .first()
-  if (existing) return c.json({ duplicate: true, session: stats }, 200)
+  if (existing) return c.json({ duplicate: true, session: stats, verification }, 200)
+
+  // Keep the quorum-encrypted trace for future re-verification. Only the
+  // enclave can decrypt it; the Worker and R2 never hold plaintext at rest.
+  let r2Key: string | null = null
+  if (ciphertext && c.env.TRACES) {
+    r2Key = `traces/${id}/${stats.externalId}.enc`
+    await c.env.TRACES.put(r2Key, ciphertext)
+  }
 
   await c.env.DB.prepare(
     `INSERT INTO sessions
       (id, passport_id, harness, external_id, started_at, ended_at,
        message_count, tool_call_count, input_tokens, output_tokens,
-       models, tool_counts, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       models, tool_counts, created_at, verification, proof, r2_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       crypto.randomUUID(),
@@ -87,9 +120,12 @@ app.post('/api/passports/:id/sessions', async (c) => {
       JSON.stringify(stats.models),
       JSON.stringify(stats.toolCounts),
       new Date().toISOString(),
+      verification,
+      proof,
+      r2Key,
     )
     .run()
-  return c.json({ duplicate: false, session: stats }, 201)
+  return c.json({ duplicate: false, session: stats, verification }, 201)
 })
 
 app.get('/api/passports/slug/:slug', async (c) => {
@@ -102,16 +138,31 @@ app.get('/api/passports/slug/:slug', async (c) => {
   if (!passport) return c.json({ error: 'passport not found' }, 404)
 
   const { results } = await c.env.DB.prepare(
-    `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts
+    `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
+            input_tokens, output_tokens, models, tool_counts, verification, proof
      FROM sessions WHERE passport_id = ?`,
   )
     .bind(passport.id)
-    .all<SessionRow>()
+    .all<SessionRow & { external_id: string; verification: string; proof: string | null }>()
 
+  const rows = results ?? []
   return c.json({
     passport: { slug: passport.slug, name: passport.name, createdAt: passport.created_at },
-    card: aggregate(results ?? []),
+    card: aggregate(rows),
+    verification: {
+      // 'attested' once the verifier runs on TVC prod with attestation checks;
+      // 'dev' while proofs come from a local enclave app with dev keys.
+      attestation: attestationMode(c.env),
+      enclaveSessions: rows.filter((r) => r.verification === 'enclave').length,
+      totalSessions: rows.length,
+    },
+    // Per-session proofs so anyone can re-verify the signatures client-side.
+    sessions: rows.map((r) => ({
+      externalId: r.external_id,
+      harness: r.harness,
+      verification: r.verification,
+      proof: r.proof ? (JSON.parse(r.proof) as unknown) : null,
+    })),
   })
 })
 

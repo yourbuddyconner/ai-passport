@@ -1,8 +1,22 @@
 import { useEffect, useState } from 'react'
-import { ShieldCheck, Terminal, Cpu, Wrench, MessageSquare, Clock, CalendarDays, Zap } from 'lucide-react'
+import {
+  ShieldCheck,
+  Terminal,
+  Cpu,
+  Wrench,
+  MessageSquare,
+  Clock,
+  CalendarDays,
+  Zap,
+  BadgeCheck,
+  CircleAlert,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { fetchPassport, type PassportView } from '@/lib/api'
+import { verifyProofSignature } from '@/lib/verify'
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -25,13 +39,32 @@ const HARNESS_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
 }
 
+type VerifyState =
+  | { status: 'idle' }
+  | { status: 'running' }
+  | { status: 'done'; verified: number; failed: number; total: number }
+
 export function Passport({ slug }: { slug: string }) {
   const [view, setView] = useState<PassportView | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [verify, setVerify] = useState<VerifyState>({ status: 'idle' })
 
   useEffect(() => {
     fetchPassport(slug).then(setView).catch((e) => setError(e.message))
   }, [slug])
+
+  async function runVerification() {
+    if (!view) return
+    setVerify({ status: 'running' })
+    const proofs = view.sessions.filter((s) => s.proof)
+    let verified = 0
+    let failed = 0
+    for (const s of proofs) {
+      if (s.proof && (await verifyProofSignature(s.proof))) verified++
+      else failed++
+    }
+    setVerify({ status: 'done', verified, failed, total: proofs.length })
+  }
 
   if (error)
     return (
@@ -139,16 +172,69 @@ export function Passport({ slug }: { slug: string }) {
               ))}
             </div>
           </div>
+          <div>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Verification
+            </h2>
+            <div className="space-y-3 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm">
+                  {view.verification.enclaveSessions > 0 ? (
+                    <span className="flex items-center gap-2">
+                      <BadgeCheck className="h-4 w-4 text-primary" />
+                      {view.verification.enclaveSessions} of {view.verification.totalSessions}{' '}
+                      session{view.verification.totalSessions === 1 ? '' : 's'} analyzed inside a
+                      secure enclave
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2 text-muted-foreground">
+                      <CircleAlert className="h-4 w-4" />
+                      Sessions were format-verified server-side (no enclave proofs yet)
+                    </span>
+                  )}
+                </div>
+                {view.verification.enclaveSessions > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void runVerification()}
+                    disabled={verify.status === 'running'}
+                  >
+                    {verify.status === 'running' ? 'Verifying…' : 'Verify proofs'}
+                  </Button>
+                )}
+              </div>
+              {verify.status === 'done' && (
+                <p
+                  className={`text-sm ${verify.failed === 0 ? 'text-primary' : 'text-destructive'}`}
+                >
+                  {verify.failed === 0
+                    ? `✓ All ${verify.verified} enclave signatures verified in your browser`
+                    : `✗ ${verify.failed} of ${verify.total} proofs failed verification`}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Signatures are checked locally with WebCrypto — no server trust required.{' '}
+                {view.verification.attestation === 'dev' &&
+                  'Proofs currently come from a development enclave; production adds an AWS Nitro attestation chain. '}
+                <a href="/about" className="text-primary hover:underline">
+                  How verification works →
+                </a>
+              </p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      <p className="mt-6 text-center text-xs text-muted-foreground">
-        Format-verified: statistics computed server-side from genuine harness session traces.
-        <br />
-        <a href="/" className="text-primary hover:underline">
-          Build your own AI Passport →
-        </a>
-      </p>
+      <div className="mt-6 flex flex-col items-center gap-3">
+        <TurnkeyBadge />
+        <p className="text-center text-xs text-muted-foreground">
+          Statistics computed from genuine harness session traces.{' '}
+          <a href="/" className="text-primary hover:underline">
+            Build your own AI Passport →
+          </a>
+        </p>
+      </div>
     </div>
   )
 }

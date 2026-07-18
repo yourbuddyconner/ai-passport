@@ -23,9 +23,22 @@ export interface CardData {
   scoreBreakdown: Record<string, number>
 }
 
+export interface SessionProofView {
+  externalId: string
+  harness: string
+  verification: 'enclave' | 'format'
+  proof: { public_key: string; payload: string; signature: string } | null
+}
+
 export interface PassportView {
   passport: { slug: string; name: string; createdAt: string }
   card: CardData
+  verification: {
+    attestation: 'attested' | 'dev'
+    enclaveSessions: number
+    totalSessions: number
+  }
+  sessions: SessionProofView[]
 }
 
 const STORAGE_KEY = 'ai-passport'
@@ -66,6 +79,7 @@ export interface UploadResult {
   harness?: string
   toolCallCount?: number
   messageCount?: number
+  verification?: 'enclave' | 'format'
 }
 
 export async function uploadTrace(
@@ -87,6 +101,7 @@ export async function uploadTrace(
     harness: data.session?.harness,
     toolCallCount: data.session?.toolCallCount,
     messageCount: data.session?.messageCount,
+    verification: data.verification,
   }
 }
 

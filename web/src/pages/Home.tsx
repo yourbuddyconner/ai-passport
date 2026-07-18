@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import {
   createPassport,
   loadCredentials,
@@ -173,7 +174,7 @@ export function Home() {
                         {r.ok
                           ? r.duplicate
                             ? 'duplicate — skipped'
-                            : `${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tool calls`
+                            : `${r.harness} · ${r.messageCount} msgs · ${r.toolCallCount} tool calls${r.verification === 'enclave' ? ' · enclave-verified' : ''}`
                           : r.error}
                       </span>
                     </li>
@@ -208,10 +209,16 @@ export function Home() {
         </div>
       )}
 
-      <p className="mt-10 text-center text-xs text-muted-foreground">
-        Traces are parsed server-side; only aggregate statistics are stored — never your code or
-        prompts.
-      </p>
+      <div className="mt-10 flex flex-col items-center gap-3">
+        <TurnkeyBadge />
+        <p className="text-center text-xs text-muted-foreground">
+          Traces are analyzed inside a secure enclave; only aggregate statistics are stored —
+          never your code or prompts.{' '}
+          <a href="/about" className="text-primary hover:underline">
+            How it works →
+          </a>
+        </p>
+      </div>
     </div>
   )
 }

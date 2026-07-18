@@ -5,6 +5,7 @@ use crate::handlers::{
 };
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     routing::{get, post},
 };
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
@@ -24,6 +25,9 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/random_app_proof", get(random_app_proof))
         .route("/quorum_key/encrypt", post(quorum_key_encrypt))
         .route("/quorum_key/decrypt", post(quorum_key_decrypt))
+        // Traces are up to 25 MB and arrive hex-encoded inside a JSON envelope,
+        // which roughly doubles their size; axum's 2 MB default is far too low.
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))

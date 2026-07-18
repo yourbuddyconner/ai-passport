@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   models TEXT NOT NULL DEFAULT '[]',
   tool_counts TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
+  verification TEXT NOT NULL DEFAULT 'format',
+  proof TEXT,
+  r2_key TEXT,
   UNIQUE(passport_id, external_id)
 );
 
