@@ -9,12 +9,12 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
-  "r2_buckets": [
-    {
-      "binding": "TRACES",
-      "bucket_name": "ai-passport-traces"
-    }
-  ],
+  // Ciphertext retention for re-verification. Requires R2 to be enabled on the
+  // account (Dashboard -> R2). Uncomment once enabled and run:
+  //   npx wrangler r2 bucket create ai-passport-traces
+  // "r2_buckets": [
+  //   { "binding": "TRACES", "bucket_name": "ai-passport-traces" }
+  // ],
   "d1_databases": [
     {
       "binding": "DB",
