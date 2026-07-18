@@ -107,6 +107,9 @@ export function Passport({ slug }: { slug: string }) {
   const issued = card.firstActivity ? dateFmt.format(new Date(card.firstActivity)) : null
   const latest = card.lastActivity ? dateFmt.format(new Date(card.lastActivity)) : null
   const cardUrl = `${location.origin}/p/${passport.slug}`
+  // Versioned share URL: busts X/Slack link-preview caches whenever the
+  // stats change, so shares always unfurl with a current card image.
+  const shareUrl = `${cardUrl}?v=${card.score}-${card.totalSessions}`
   const shareText = `My AI Passport: ${card.grade} — ${card.score}/100 fluency across ${card.totalSessions} enclave-verified coding sessions.`
 
   return (
@@ -322,7 +325,7 @@ export function Passport({ slug }: { slug: string }) {
           size="sm"
           onClick={() =>
             window.open(
-              `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(cardUrl)}`,
+              `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shareUrl)}`,
               '_blank',
               'noopener',
             )
@@ -336,7 +339,7 @@ export function Passport({ slug }: { slug: string }) {
             size="sm"
             onClick={() =>
               void navigator
-                .share({ title: 'AI Passport', text: shareText, url: cardUrl })
+                .share({ title: 'AI Passport', text: shareText, url: shareUrl })
                 .catch(() => {})
             }
           >
