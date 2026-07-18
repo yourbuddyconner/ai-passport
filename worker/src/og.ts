@@ -87,9 +87,10 @@ export async function renderCardOg(
   const statsRow = card
     ? `<div style="display:flex;gap:14px;margin-top:26px">
         ${stat(String(card.totalSessions), 'sessions')}
+        ${stat(String(card.repositories), 'repos')}
         ${stat(fmt(card.totalToolCalls), 'tool calls')}
         ${stat(fmt(card.totalOutputTokens), 'tokens out')}
-        ${stat(String(card.activeDays), 'days')}
+        ${stat(String(card.achievements.filter((a) => a.earned).length), 'endorsements')}
       </div>`
     : `<div style="display:flex;margin-top:26px;font-family:Mono;font-size:22px;color:#756449">Enclave-verified proof of AI fluency</div>`
 

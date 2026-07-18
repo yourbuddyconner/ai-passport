@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  FolderOpen,
   UploadSimple,
   FileCode,
   CheckCircle,
@@ -20,6 +21,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { VaultModal } from '@/components/VaultModal'
+import { Endorsements } from '@/components/Endorsements'
 import { GradeSeal } from '@/components/GradeSeal'
 import { mrz } from '@/lib/mrz'
 import { logout, uploadTraceAsOwner, type Me, type UploadResult } from '@/lib/api'
@@ -218,8 +220,9 @@ export function Dashboard({
       />
 
       {/* Stats */}
-      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <StatTile icon={TerminalWindow} label="sessions" value={me.card.totalSessions} />
+        <StatTile icon={FolderOpen} label="repos" value={me.card.repositories} />
         <StatTile icon={Wrench} label="tool calls" value={me.card.totalToolCalls} format={fmt} />
         <StatTile icon={Lightning} label="tokens out" value={me.card.totalOutputTokens} format={fmt} />
         <StatTile icon={CalendarBlank} label="active days" value={me.card.activeDays} />
@@ -326,6 +329,24 @@ export function Dashboard({
               ))}
             </ul>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Endorsements */}
+      <Card className="mt-5">
+        <CardHeader>
+          <CardTitle>
+            Endorsements{' '}
+            <span className="ml-1 font-sans text-sm font-normal text-muted-foreground tabular-nums">
+              {me.card.achievements.filter((a) => a.earned).length} of {me.card.achievements.length}
+            </span>
+          </CardTitle>
+          <CardDescription>
+            Earned from your verified sessions. Upload more traces to fill the page.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Endorsements achievements={me.card.achievements} />
         </CardContent>
       </Card>
 

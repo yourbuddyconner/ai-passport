@@ -6,7 +6,7 @@ use passport_verifier::parsers::parse_trace;
 
 fn claude_trace() -> String {
     [
-        r#"{"type":"user","sessionId":"abc-123","timestamp":"2026-07-10T15:15:45.972Z","message":{"role":"user","content":"hello"}}"#,
+        r#"{"type":"user","sessionId":"abc-123","cwd":"/home/dev/proj","timestamp":"2026-07-10T15:15:45.972Z","message":{"role":"user","content":"hello"}}"#,
         r#"{"type":"assistant","sessionId":"abc-123","timestamp":"2026-07-10T15:16:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":250},"content":[{"type":"text","text":"hi"},{"type":"tool_use","name":"Bash","input":{}}]}}"#,
         r#"{"type":"assistant","sessionId":"abc-123","timestamp":"2026-07-10T16:00:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":50,"output_tokens":75},"content":[{"type":"tool_use","name":"Read","input":{}}]}}"#,
         r#"{"type":"file-history-snapshot","sessionId":"abc-123"}"#,
@@ -39,6 +39,7 @@ fn parses_claude_code_trace() {
     assert_eq!(s.tool_counts.get("Read"), Some(&1));
     assert_eq!(s.started_at.as_deref(), Some("2026-07-10T15:15:45.972Z"));
     assert_eq!(s.ended_at.as_deref(), Some("2026-07-10T16:00:00.000Z"));
+    assert_eq!(s.project_hash.as_deref().map(str::len), Some(16));
 }
 
 #[test]
@@ -52,6 +53,7 @@ fn parses_codex_trace() {
     assert_eq!(s.output_tokens, 13366);
     assert_eq!(s.models, vec!["gpt-5.4"]);
     assert_eq!(s.tool_counts.get("exec_command"), Some(&1));
+    assert!(s.project_hash.is_some());
 }
 
 #[test]

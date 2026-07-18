@@ -32,6 +32,12 @@ type Env = {
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+/** Match the enclave's project hash: truncated SHA-256 of the cwd. */
+async function hashCwd(cwd: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cwd))
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 const app = new Hono<{ Bindings: Env }>()
 
 const slugWords = [
@@ -142,7 +148,7 @@ app.get('/api/me', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, created_at
+            input_tokens, output_tokens, models, tool_counts, verification, created_at, project_hash
      FROM sessions WHERE passport_id = ? ORDER BY started_at DESC`,
   )
     .bind(passport.id)
@@ -333,12 +339,13 @@ app.post('/api/passports/:id/sessions', async (c) => {
     await c.env.TRACES.put(r2Key, ciphertext)
   }
 
+  const projectHash = stats.projectHash ?? (stats.cwd ? await hashCwd(stats.cwd) : null)
   await c.env.DB.prepare(
     `INSERT INTO sessions
       (id, passport_id, harness, external_id, started_at, ended_at,
        message_count, tool_call_count, input_tokens, output_tokens,
-       models, tool_counts, created_at, verification, proof, r2_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       models, tool_counts, created_at, verification, proof, r2_key, project_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       crypto.randomUUID(),
@@ -357,6 +364,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
       verification,
       proof,
       r2Key,
+      projectHash,
     )
     .run()
   return c.json({ duplicate: false, session: stats, verification }, 201)
@@ -373,7 +381,7 @@ app.get('/api/passports/slug/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, proof
+            input_tokens, output_tokens, models, tool_counts, verification, proof, project_hash
      FROM sessions WHERE passport_id = ?`,
   )
     .bind(passport.id)
@@ -413,7 +421,7 @@ app.get('/og/:slug', async (c) => {
     if (!passport) return c.json({ error: 'not found' }, 404)
     const { results } = await c.env.DB.prepare(
       `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-              input_tokens, output_tokens, models, tool_counts
+              input_tokens, output_tokens, models, tool_counts, project_hash
        FROM sessions WHERE passport_id = ?`,
     )
       .bind(passport.id)
@@ -436,7 +444,7 @@ app.get('/p/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts
+            input_tokens, output_tokens, models, tool_counts, project_hash
      FROM sessions WHERE passport_id = ?`,
   )
     .bind(passport.id)

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   verification TEXT NOT NULL DEFAULT 'format',
   proof TEXT,
   r2_key TEXT,
+  project_hash TEXT,
   UNIQUE(passport_id, external_id)
 );
 

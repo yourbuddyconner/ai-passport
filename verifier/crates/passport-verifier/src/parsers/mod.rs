@@ -38,6 +38,16 @@ pub struct SessionStats {
     pub models: Vec<String>,
     /// Tool name -> invocation count. BTreeMap for deterministic serialization.
     pub tool_counts: BTreeMap<String, u64>,
+    /// Truncated SHA-256 of the session's working directory. Lets cards count
+    /// distinct repositories without ever revealing a path.
+    pub project_hash: Option<String>,
+}
+
+/// Hash a working-directory path into a 16-hex-char project identifier.
+pub(crate) fn project_hash(cwd: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(cwd.as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Error returned when a trace cannot be parsed.

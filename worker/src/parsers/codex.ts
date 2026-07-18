@@ -5,6 +5,7 @@ interface CodexLine {
   timestamp?: string
   payload?: {
     id?: string
+    cwd?: string
     type?: string
     name?: string
     model?: string
@@ -50,7 +51,10 @@ export function parseCodex(lines: unknown[]): SessionStats {
       if (!stats.startedAt || o.timestamp < stats.startedAt) stats.startedAt = o.timestamp
       if (!stats.endedAt || o.timestamp > stats.endedAt) stats.endedAt = o.timestamp
     }
-    if (o.type === 'session_meta' && p?.id) stats.externalId = p.id
+    if (o.type === 'session_meta' && p?.id) {
+      stats.externalId = p.id
+      if (p.cwd) stats.cwd = p.cwd
+    }
     if (o.type === 'turn_context' && p?.model) models.add(p.model)
     if (o.type === 'response_item' && p) {
       if (p.type === 'message') stats.messageCount++

@@ -1,7 +1,7 @@
 //! Parser for Codex CLI rollout traces
 //! (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`).
 
-use super::{ParseError, SessionStats};
+use super::{ParseError, SessionStats, project_hash};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +17,7 @@ pub(super) fn looks_like(first_lines: &[Value]) -> bool {
 
 pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
     let mut external_id = String::new();
+    let mut cwd: Option<String> = None;
     let mut started_at: Option<String> = None;
     let mut ended_at: Option<String> = None;
     let mut message_count: u64 = 0;
@@ -42,6 +43,9 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
             Some("session_meta") => {
                 if let Some(id) = payload.get("id").and_then(Value::as_str) {
                     external_id = id.to_string();
+                }
+                if let Some(dir) = payload.get("cwd").and_then(Value::as_str) {
+                    cwd = Some(dir.to_string());
                 }
             }
             Some("turn_context") => {
@@ -103,5 +107,6 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
         output_tokens,
         models: models.into_iter().collect(),
         tool_counts,
+        project_hash: cwd.as_deref().map(project_hash),
     })
 }

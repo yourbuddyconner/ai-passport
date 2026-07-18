@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import {
+  FolderOpen,
   SealCheck,
   TerminalWindow,
-  ChatText,
   Wrench,
   Lightning,
   Clock,
@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { GradeSeal } from '@/components/GradeSeal'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { mrz } from '@/lib/mrz'
+import { Endorsements } from '@/components/Endorsements'
 import { fetchPassport, type PassportView } from '@/lib/api'
 import { verifyProofSignature } from '@/lib/verify'
 import { useCountUp } from '@/lib/useCountUp'
@@ -186,12 +187,21 @@ export function Passport({ slug }: { slug: string }) {
         {/* Entries */}
         <div className="grid grid-cols-3 gap-2 px-7 pb-6 sm:grid-cols-6">
           <Entry icon={TerminalWindow} label="sessions" value={card.totalSessions} />
-          <Entry icon={ChatText} label="messages" value={card.totalMessages} format={fmt} />
+          <Entry icon={FolderOpen} label="repos" value={card.repositories} />
           <Entry icon={Wrench} label="tool calls" value={card.totalToolCalls} format={fmt} />
           <Entry icon={Lightning} label="tokens out" value={card.totalOutputTokens} format={fmt} />
           <Entry icon={Clock} label="hours" value={card.activeHours} />
           <Entry icon={CalendarBlank} label="days" value={card.activeDays} />
         </div>
+
+        {card.achievements.some((a) => a.earned) && (
+          <div className="px-7 pb-6">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              endorsements · {card.achievements.filter((a) => a.earned).length} earned
+            </p>
+            <Endorsements achievements={card.achievements} showLocked={false} />
+          </div>
+        )}
 
         {/* Top tools */}
         {card.topTools.length > 0 && (

@@ -7,8 +7,18 @@ export interface PassportCredentials {
   name: string
 }
 
+export interface Achievement {
+  id: string
+  name: string
+  description: string
+  earned: boolean
+  progress: { current: number; target: number } | null
+}
+
 export interface CardData {
   totalSessions: number
+  repositories: number
+  achievements: Achievement[]
   totalMessages: number
   totalToolCalls: number
   totalInputTokens: number

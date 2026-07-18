@@ -75,6 +75,7 @@ export function attestationMode(env: { VERIFIER_ATTESTED?: string }): 'attested'
 interface RustSessionStats {
   harness: string
   external_id: string
+  project_hash?: string | null
   started_at: string | null
   ended_at: string | null
   message_count: number
@@ -148,6 +149,7 @@ export async function analyzeCiphertext(
       outputTokens: Number(s.output_tokens),
       models: s.models,
       toolCounts: Object.fromEntries(Object.entries(s.tool_counts).map(([k, v]) => [k, Number(v)])),
+      projectHash: s.project_hash ?? null,
     },
     traceSha256: signed.trace_sha256,
     analyzedAt: Number(signed.analyzed_at),

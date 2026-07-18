@@ -3,6 +3,7 @@ import { ParseError, type SessionStats } from './types'
 interface ClaudeLine {
   type?: string
   sessionId?: string
+  cwd?: string
   timestamp?: string
   message?: {
     model?: string
@@ -42,6 +43,7 @@ export function parseClaudeCode(lines: unknown[]): SessionStats {
     if (typeof raw !== 'object' || raw === null) continue
     const o = raw as ClaudeLine
     if (!stats.externalId && o.sessionId) stats.externalId = o.sessionId
+    if (!stats.cwd && o.cwd) stats.cwd = o.cwd
     if (o.timestamp) {
       if (!stats.startedAt || o.timestamp < stats.startedAt) stats.startedAt = o.timestamp
       if (!stats.endedAt || o.timestamp > stats.endedAt) stats.endedAt = o.timestamp
