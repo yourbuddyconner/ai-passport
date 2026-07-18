@@ -3,6 +3,10 @@
   "name": "ai-passport",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  "routes": [
+    { "pattern": "aipassport.dev", "custom_domain": true },
+    { "pattern": "www.aipassport.dev", "custom_domain": true }
+  ],
   "assets": {
     "directory": "../web/dist",
     "binding": "ASSETS",

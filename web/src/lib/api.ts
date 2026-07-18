@@ -147,3 +147,77 @@ export async function fetchPassport(slug: string): Promise<PassportView> {
   if (!res.ok) throw new Error('Passport not found')
   return res.json()
 }
+
+// ---------- Passkey accounts ----------
+
+export interface SessionSummary {
+  externalId: string
+  harness: string
+  startedAt: string | null
+  endedAt: string | null
+  messageCount: number
+  toolCallCount: number
+  verification: 'enclave' | 'format'
+  models: string[]
+}
+
+export interface Me {
+  user: { displayName: string; title: string | null; onboarded: boolean }
+  passport: { id: string; slug: string; name: string }
+  card: CardData
+  sessions: SessionSummary[]
+}
+
+export async function fetchMe(): Promise<Me | null> {
+  const res = await fetch('/api/me')
+  if (res.status === 401) return null
+  if (!res.ok) throw new Error('failed to load your passport')
+  return res.json()
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
+}
+
+export async function submitOnboarding(displayName: string, title: string): Promise<void> {
+  const res = await fetch('/api/me/onboarding', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ displayName, title }),
+  })
+  if (!res.ok) throw new Error('failed to save profile')
+}
+
+/** Upload for a passkey-authenticated owner (session cookie, no edit token). */
+export async function uploadTraceAsOwner(passportId: string, file: File): Promise<UploadResult> {
+  const text = await file.text()
+  const quorumKey = await getQuorumKey()
+  let res: Response
+  if (quorumKey) {
+    const envelope = JSON.stringify({ passport_id: passportId, trace: text })
+    const ciphertext = await encryptToQuorumKey(quorumKey, new TextEncoder().encode(envelope))
+    res = await fetch(`/api/passports/${passportId}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ciphertext }),
+    })
+  } else {
+    res = await fetch(`/api/passports/${passportId}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: text,
+    })
+  }
+  const data = await res.json().catch(() => null)
+  if (!res.ok) return { fileName: file.name, ok: false, error: data?.error ?? `HTTP ${res.status}` }
+  return {
+    fileName: file.name,
+    ok: true,
+    duplicate: data.duplicate,
+    harness: data.session?.harness,
+    toolCallCount: data.session?.toolCallCount,
+    messageCount: data.session?.messageCount,
+    verification: data.verification,
+    encryptedInBrowser: !!quorumKey,
+  }
+}

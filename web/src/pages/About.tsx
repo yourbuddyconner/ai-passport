@@ -1,4 +1,4 @@
-import { ShieldCheck, Lock, FileCheck2, Cpu, ArrowLeft } from 'lucide-react'
+import { SealCheck, LockKey, Certificate, Cpu, ArrowLeft } from '@phosphor-icons/react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 function Step({
@@ -6,14 +6,14 @@ function Step({
   title,
   children,
 }: {
-  icon: typeof Lock
+  icon: typeof LockKey
   title: string
   children: React.ReactNode
 }) {
   return (
     <div className="flex gap-4">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <Icon className="h-5 w-5" />
+        <Icon size={20} weight="duotone" aria-hidden="true" />
       </div>
       <div>
         <h3 className="font-semibold">{title}</h3>
@@ -30,7 +30,7 @@ export function About() {
         href="/"
         className="mb-8 inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> Back to AI Passport
+        <ArrowLeft size={16} aria-hidden="true" /> Back to AI Passport
       </a>
 
       <header className="mb-10">
@@ -39,7 +39,7 @@ export function About() {
           AI Passport analyzes your coding-session traces inside a secure enclave powered by{' '}
           <a
             href="https://docs.turnkey.com/features/verifiable-cloud/overview"
-            className="text-primary hover:underline"
+            className="text-primary underline-offset-2 hover:underline"
             target="_blank"
             rel="noreferrer"
           >
@@ -55,7 +55,7 @@ export function About() {
           <CardTitle>The architecture</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <Step icon={Lock} title="Traces are encrypted in your browser">
+          <Step icon={LockKey} title="Traces are encrypted in your browser">
             Session traces are encrypted <strong>in your browser</strong> to the enclave's{' '}
             <strong>quorum key</strong> before upload (ECDH P-256 + AES-256-GCM, the qos_p256
             scheme). The application server and storage layer (Cloudflare Workers/D1/R2) only
@@ -68,14 +68,14 @@ export function About() {
             a trace, computes session statistics, signs them, and forgets everything. Even the
             operators of this site cannot see inside it.
           </Step>
-          <Step icon={FileCheck2} title="Every session carries an app proof">
+          <Step icon={Certificate} title="Every session carries an app proof">
             The enclave signs the exact statistics it computed — together with a SHA-256 hash of
             the analyzed trace and the passport ID — using its ephemeral key. That proof is
             stored with the session and shown on the card. Binding the passport ID prevents a
             proof from being replayed onto someone else's card; the trace hash binds it to the
             exact document analyzed.
           </Step>
-          <Step icon={ShieldCheck} title="The score is a public formula">
+          <Step icon={SealCheck} title="The score is a public formula">
             The enclave signs <em>facts</em>, not opinions. The fluency score is a deterministic,
             documented formula over the signed session statistics — anyone can recompute it from
             the data shown on the card.
@@ -106,7 +106,7 @@ export function About() {
             When the verifier runs on Turnkey Verifiable Cloud, the signing keys are bound to a{' '}
             <a
               href="https://aws.amazon.com/ec2/nitro/nitro-enclaves/"
-              className="text-primary hover:underline"
+              className="text-primary underline-offset-2 hover:underline"
               target="_blank"
               rel="noreferrer"
             >
@@ -116,7 +116,7 @@ export function About() {
             measurements) that holds the keys. Because the image is built reproducibly with{' '}
             <a
               href="https://stagex.tools"
-              className="text-primary hover:underline"
+              className="text-primary underline-offset-2 hover:underline"
               target="_blank"
               rel="noreferrer"
             >
@@ -151,7 +151,7 @@ export function About() {
           repository, built from{' '}
           <a
             href="https://github.com/tkhq/tvc-template"
-            className="text-primary hover:underline"
+            className="text-primary underline-offset-2 hover:underline"
             target="_blank"
             rel="noreferrer"
           >

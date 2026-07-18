@@ -8,6 +8,18 @@ import {
   fetchQuorumPublicKey,
   VerifierError,
 } from './verifier'
+import { VERIFIER_DEPLOYMENT } from './deployment'
+import {
+  authenticationOptions,
+  clearSessionCookie,
+  createLoginSession,
+  deleteSession,
+  registrationOptions,
+  sessionCookie,
+  userFromCookie,
+  verifyAuthentication,
+  verifyRegistration,
+} from './auth'
 
 type Env = {
   DB: D1Database
@@ -47,6 +59,135 @@ app.post('/api/passports', async (c) => {
   return c.json({ id, slug, editToken }, 201)
 })
 
+// ---------- Passkey auth ----------
+
+app.post('/api/auth/register/options', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : ''
+  if (!name) return c.json({ error: 'name is required' }, 400)
+  const { options, challengeId } = await registrationOptions(c.env, c.req.url, name)
+  return c.json({ options, challengeId })
+})
+
+app.post('/api/auth/register/verify', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  if (!body?.challengeId || !body?.response || typeof body?.name !== 'string')
+    return c.json({ error: 'challengeId, name and response are required' }, 400)
+  try {
+    const userId = await verifyRegistration(
+      c.env,
+      c.req.url,
+      body.challengeId,
+      body.name,
+      body.response,
+    )
+    // Every account gets its passport at birth.
+    const passportId = crypto.randomUUID()
+    await c.env.DB.prepare(
+      'INSERT INTO passports (id, slug, name, edit_token, created_at, user_id) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+      .bind(
+        passportId,
+        makeSlug(),
+        body.name.trim().slice(0, 80),
+        crypto.randomUUID(),
+        new Date().toISOString(),
+        userId,
+      )
+      .run()
+    const session = await createLoginSession(c.env, userId)
+    c.header('set-cookie', sessionCookie(session))
+    return c.json({ ok: true }, 201)
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'registration failed' }, 400)
+  }
+})
+
+app.post('/api/auth/login/options', async (c) => {
+  const { options, challengeId } = await authenticationOptions(c.env, c.req.url)
+  return c.json({ options, challengeId })
+})
+
+app.post('/api/auth/login/verify', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  if (!body?.challengeId || !body?.response)
+    return c.json({ error: 'challengeId and response are required' }, 400)
+  try {
+    const userId = await verifyAuthentication(c.env, c.req.url, body.challengeId, body.response)
+    const session = await createLoginSession(c.env, userId)
+    c.header('set-cookie', sessionCookie(session))
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'login failed' }, 400)
+  }
+})
+
+app.post('/api/auth/logout', async (c) => {
+  await deleteSession(c.env, c.req.header('cookie'))
+  c.header('set-cookie', clearSessionCookie())
+  return c.json({ ok: true })
+})
+
+// Everything about the signed-in user in one call: profile, passport, card.
+app.get('/api/me', async (c) => {
+  const user = await userFromCookie(c.env, c.req.header('cookie'))
+  if (!user) return c.json({ error: 'not signed in' }, 401)
+  const passport = await c.env.DB.prepare(
+    'SELECT id, slug, name FROM passports WHERE user_id = ?',
+  )
+    .bind(user.id)
+    .first<{ id: string; slug: string; name: string }>()
+  if (!passport) return c.json({ error: 'no passport for user' }, 500)
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
+            input_tokens, output_tokens, models, tool_counts, verification, created_at
+     FROM sessions WHERE passport_id = ? ORDER BY started_at DESC`,
+  )
+    .bind(passport.id)
+    .all<
+      SessionRow & {
+        external_id: string
+        verification: string
+        created_at: string
+      }
+    >()
+  const rows = results ?? []
+  return c.json({
+    user: { displayName: user.displayName, title: user.title, onboarded: user.onboarded },
+    passport,
+    card: aggregate(rows),
+    sessions: rows.map((r) => ({
+      externalId: r.external_id,
+      harness: r.harness,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      messageCount: r.message_count,
+      toolCallCount: r.tool_call_count,
+      verification: r.verification,
+      models: JSON.parse(r.models || '[]') as string[],
+    })),
+  })
+})
+
+app.post('/api/me/onboarding', async (c) => {
+  const user = await userFromCookie(c.env, c.req.header('cookie'))
+  if (!user) return c.json({ error: 'not signed in' }, 401)
+  const body = await c.req.json().catch(() => null)
+  const displayName =
+    typeof body?.displayName === 'string' && body.displayName.trim()
+      ? body.displayName.trim().slice(0, 80)
+      : user.displayName
+  const title = typeof body?.title === 'string' ? body.title.trim().slice(0, 120) : null
+  await c.env.DB.prepare('UPDATE users SET display_name = ?, title = ?, onboarded = 1 WHERE id = ?')
+    .bind(displayName, title, user.id)
+    .run()
+  await c.env.DB.prepare('UPDATE passports SET name = ? WHERE user_id = ?')
+    .bind(displayName, user.id)
+    .run()
+  return c.json({ ok: true })
+})
+
 // Quorum public key for browser-side envelope encryption. Proxied (and
 // cached) so the browser needs no CORS access to the enclave. 404 when no
 // verifier is configured — the client then uses the plaintext upload path.
@@ -67,6 +208,29 @@ app.get('/api/verifier/public-key', async (c) => {
   }
 })
 
+// Full deployment disclosure: pinned manifest facts + live enclave state.
+app.get('/api/verifier/info', async (c) => {
+  let quorumPublicKey: string | null = null
+  let reachable = false
+  if (c.env.VERIFIER_URL) {
+    try {
+      quorumPublicKey = await fetchQuorumPublicKey(c.env.VERIFIER_URL)
+      reachable = true
+    } catch {
+      // reported below as unreachable
+    }
+  }
+  return c.json({
+    deployment: VERIFIER_DEPLOYMENT,
+    live: {
+      configured: !!c.env.VERIFIER_URL,
+      reachable,
+      quorumPublicKey,
+      attestation: attestationMode(c.env),
+    },
+  })
+})
+
 // Lightweight existence check so clients can validate saved credentials.
 app.get('/api/passports/:id', async (c) => {
   const passport = await c.env.DB.prepare('SELECT id, slug, name FROM passports WHERE id = ?')
@@ -79,11 +243,17 @@ app.get('/api/passports/:id', async (c) => {
 app.post('/api/passports/:id/sessions', async (c) => {
   const id = c.req.param('id')
   const token = c.req.header('x-edit-token')
-  const passport = await c.env.DB.prepare('SELECT id, edit_token FROM passports WHERE id = ?')
+  const passport = await c.env.DB.prepare(
+    'SELECT id, edit_token, user_id FROM passports WHERE id = ?',
+  )
     .bind(id)
-    .first<{ id: string; edit_token: string }>()
+    .first<{ id: string; edit_token: string; user_id: string | null }>()
   if (!passport) return c.json({ error: 'passport not found' }, 404)
-  if (!token || token !== passport.edit_token) return c.json({ error: 'invalid edit token' }, 403)
+  // Owner via passkey session cookie, or legacy anonymous edit token.
+  const user = await userFromCookie(c.env, c.req.header('cookie'))
+  const isOwner = !!user && passport.user_id === user.id
+  if (!isOwner && (!token || token !== passport.edit_token))
+    return c.json({ error: 'not authorized for this passport' }, 403)
 
   const len = Number(c.req.header('content-length') ?? 0)
   if (len > MAX_UPLOAD_BYTES * 3) return c.json({ error: 'file too large (max 25 MB)' }, 413)

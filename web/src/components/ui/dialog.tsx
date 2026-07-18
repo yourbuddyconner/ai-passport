@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { X } from 'lucide-react'
+import { X } from '@phosphor-icons/react'
 
 /**
  * Minimal accessible modal: overlay click + Escape close, focus moves in on
@@ -49,15 +49,15 @@ export function Dialog({
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
-        className="relative max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-xl border border-border bg-card shadow-2xl focus:outline-none"
+        className="relative max-h-[85vh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-lg border border-foil/25 bg-background text-foreground shadow-2xl focus:outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <button
           onClick={onClose}
           aria-label="Close"
-          className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-foreground/60 transition-colors hover:bg-white/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foil"
         >
-          <X className="h-4 w-4" />
+          <X size={16} weight="bold" aria-hidden="true" />
         </button>
         {children}
       </div>

@@ -1,24 +1,134 @@
 @import "tailwindcss";
 
+/*
+ * AI Passport design system — "the document".
+ * Oxblood passport cover, cream security paper, gold foil, guilloche.
+ */
 @theme {
-  --color-background: oklch(0.145 0 0);
-  --color-foreground: oklch(0.985 0 0);
-  --color-card: oklch(0.185 0.005 285);
-  --color-card-foreground: oklch(0.985 0 0);
-  --color-primary: oklch(0.75 0.18 155);
-  --color-primary-foreground: oklch(0.15 0.02 155);
-  --color-muted: oklch(0.24 0.005 285);
-  --color-muted-foreground: oklch(0.68 0.01 285);
-  --color-border: oklch(0.28 0.006 285);
-  --color-accent: oklch(0.26 0.008 285);
-  --color-accent-foreground: oklch(0.985 0 0);
-  --color-destructive: oklch(0.6 0.2 25);
-  --radius: 0.625rem;
+  /* cover (page backdrop) */
+  --color-background: #180e11;
+  --color-foreground: #ddd2bc;
+
+  /* security paper (cards) */
+  --color-card: #f3ecdd;
+  --color-card-foreground: #2b2118;
+
+  /* gold foil — dark enough for AA on paper */
+  --color-primary: #7c5f1d;
+  --color-primary-foreground: #f7f1e2;
+  /* bright foil for on-cover accents */
+  --color-foil: #d0a94e;
+
+  --color-muted: #e9e0cb;
+  --color-muted-foreground: #756449;
+  --color-border: #d8cbae;
+  --color-accent: #efe6d2;
+  --color-accent-foreground: #2b2118;
+  --color-destructive: #a03333;
+  /* passport-stamp green: the color of "verified" */
+  --color-verify: #2e6e4e;
+
+  --font-display: "Fraunces", "Georgia", serif;
+  --radius: 0.375rem;
+}
+
+html {
+  color-scheme: dark;
 }
 
 body {
   @apply bg-background text-foreground antialiased;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  overflow-x: hidden;
+  touch-action: manipulation;
+}
+
+h1,
+h2 {
+  font-family: var(--font-display);
+  text-wrap: balance;
+}
+
+/* Cross-document view transitions: soft page-to-page cross-fade. */
+@view-transition {
+  navigation: auto;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.28s;
+}
+
+/* Guilloche: fine-line security pattern for paper surfaces. */
+.guilloche {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Cg fill='none' stroke='%237c5f1d' stroke-width='0.5' opacity='0.13'%3E%3Ccircle cx='60' cy='60' r='24'/%3E%3Ccircle cx='60' cy='60' r='34'/%3E%3Ccircle cx='60' cy='60' r='44'/%3E%3Ccircle cx='0' cy='0' r='30'/%3E%3Ccircle cx='120' cy='0' r='30'/%3E%3Ccircle cx='0' cy='120' r='30'/%3E%3Ccircle cx='120' cy='120' r='30'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Foil text: subtle metallic sheen for on-cover headings. */
+.foil {
+  color: var(--color-foil);
+  background: linear-gradient(100deg, #a8842f 0%, #e8cd7a 38%, #c39a3c 62%, #f0d98b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Visa stamp: rotated rubber-stamp frame for harness marks. */
+.stamp {
+  border: 2px solid currentColor;
+  border-radius: 0.5rem;
+  padding: 0.3rem 0.7rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1.35;
+  opacity: 0.85;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.92 0.08'/%3E%3C/filter%3E%3Crect width='80' height='80' fill='white' filter='url(%23n)'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.92 0.08'/%3E%3C/filter%3E%3Crect width='80' height='80' fill='white' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Foil seal: the embossed circular grade mark. */
+.seal {
+  background:
+    radial-gradient(circle at 32% 28%, #f0d98b 0%, #d0a94e 34%, #a8842f 68%, #8a6a20 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 245, 210, 0.75),
+    inset 0 -2px 3px rgba(90, 62, 12, 0.45),
+    0 1px 4px rgba(24, 14, 17, 0.3);
+}
+
+/* Page-load sequence for the passport spread. */
+@keyframes page-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.page-rise {
+  animation: page-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes stamp-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.5) rotate(var(--stamp-rotate, -6deg));
+  }
+  60% {
+    opacity: 1;
+    transform: scale(0.94) rotate(var(--stamp-rotate, -6deg));
+  }
+  100% {
+    opacity: 0.85;
+    transform: scale(1) rotate(var(--stamp-rotate, -6deg));
+  }
+}
+.stamp-in {
+  animation: stamp-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 
 @keyframes vault-seal {
@@ -31,13 +141,19 @@ body {
     transform: none;
   }
 }
-
 .vault-layer {
   animation: vault-seal 0.45s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vault-layer {
+  .vault-layer,
+  .page-rise,
+  .stamp-in {
+    animation: none;
+    opacity: 1;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
     animation: none;
   }
 }

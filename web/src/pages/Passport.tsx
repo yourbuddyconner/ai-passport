@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react'
 import {
-  ShieldCheck,
-  Terminal,
-  Cpu,
+  SealCheck,
+  TerminalWindow,
+  ChatText,
   Wrench,
-  MessageSquare,
+  Lightning,
   Clock,
-  CalendarDays,
-  Zap,
-  BadgeCheck,
-  CircleAlert,
-} from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+  CalendarBlank,
+  Cpu,
+  Copy,
+  ShareNetwork,
+  XLogo,
+  WarningCircle,
+} from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { GradeSeal } from '@/components/GradeSeal'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
+import { mrz } from '@/lib/mrz'
 import { fetchPassport, type PassportView } from '@/lib/api'
 import { verifyProofSignature } from '@/lib/verify'
 
@@ -24,19 +26,19 @@ function fmt(n: number): string {
   return String(n)
 }
 
-function Stat({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
-  return (
-    <div className="flex flex-col items-center rounded-lg bg-muted p-4">
-      <Icon className="mb-2 h-5 w-5 text-primary" />
-      <span className="text-2xl font-bold tabular-nums">{value}</span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-    </div>
-  )
-}
-
 const HARNESS_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex CLI',
+}
+
+function Entry({ icon: Icon, label, value }: { icon: typeof Cpu; label: string; value: string }) {
+  return (
+    <div className="flex flex-col items-center rounded-md border border-border/70 bg-white/40 px-2 py-3">
+      <Icon size={18} weight="duotone" className="mb-1.5 text-primary" aria-hidden="true" />
+      <span className="text-xl font-bold tabular-nums text-card-foreground">{value}</span>
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+    </div>
+  )
 }
 
 type VerifyState =
@@ -48,9 +50,12 @@ export function Passport({ slug }: { slug: string }) {
   const [view, setView] = useState<PassportView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [verify, setVerify] = useState<VerifyState>({ status: 'idle' })
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    fetchPassport(slug).then(setView).catch((e) => setError(e.message))
+    fetchPassport(slug)
+      .then(setView)
+      .catch((e) => setError(e.message))
   }, [slug])
 
   async function runVerification() {
@@ -70,171 +75,263 @@ export function Passport({ slug }: { slug: string }) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 text-muted-foreground">
         <p>{error}</p>
-        <a href="/" className="text-sm text-primary hover:underline">
-          Build your own AI Passport →
+        <a href="/" className="text-sm text-foil hover:underline">
+          Get Your Own AI Passport →
         </a>
       </div>
     )
   if (!view)
     return (
       <div className="flex min-h-screen items-center justify-center text-muted-foreground">
-        Loading…
+        Opening the passport…
       </div>
     )
 
   const { passport, card } = view
+  const [mrz1, mrz2] = mrz(passport.name, passport.slug, card.score, card.grade)
   const maxTool = card.topTools[0]?.count ?? 1
-  const range =
-    card.firstActivity && card.lastActivity
-      ? `${card.firstActivity.slice(0, 10)} → ${card.lastActivity.slice(0, 10)}`
-      : '—'
+  const dateFmt = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short' })
+  const issued = card.firstActivity ? dateFmt.format(new Date(card.firstActivity)) : null
+  const latest = card.lastActivity ? dateFmt.format(new Date(card.lastActivity)) : null
+  const cardUrl = `${location.origin}/p/${passport.slug}`
+  const shareText = `My AI Passport: ${card.grade} — ${card.score}/100 fluency across ${card.totalSessions} enclave-verified coding sessions.`
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-16">
-      <Card className="overflow-hidden">
-        <div className="bg-gradient-to-r from-primary/20 to-transparent p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-primary">
-              <ShieldCheck className="h-6 w-6" />
-              <span className="text-sm font-semibold uppercase tracking-widest">
-                Verified AI Use
-              </span>
-            </div>
-            <Badge className="text-sm">{card.grade}</Badge>
+    <div className="mx-auto max-w-2xl px-4 py-12">
+      <header className="page-rise mb-6 flex items-center justify-center gap-2">
+        <SealCheck size={18} weight="duotone" className="text-foil" aria-hidden="true" />
+        <span className="font-mono text-[11px] uppercase tracking-[0.35em] text-foreground/60">
+          AI Passport · Verified AI Use
+        </span>
+      </header>
+
+      {/* The open spread */}
+      <div
+        className="page-rise guilloche overflow-hidden rounded-lg border border-[#c8b88f]/40 bg-card text-card-foreground shadow-2xl"
+        style={{ animationDelay: '100ms' }}
+      >
+        {/* Identity page */}
+        <div className="flex items-start justify-between gap-6 p-7 pb-5">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              bearer / titulaire
+            </p>
+            <h1 className="mt-1 break-words text-4xl font-semibold">{passport.name}</h1>
+            <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-[11px] uppercase">
+              <div>
+                <dt className="tracking-widest text-muted-foreground/80">first entry</dt>
+                <dd className="mt-0.5 text-[13px]">{issued ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="tracking-widest text-muted-foreground/80">latest entry</dt>
+                <dd className="mt-0.5 text-[13px]">{latest ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="tracking-widest text-muted-foreground/80">document no.</dt>
+                <dd className="mt-0.5 text-[13px]" translate="no">
+                  {passport.slug}
+                </dd>
+              </div>
+              <div>
+                <dt className="tracking-widest text-muted-foreground/80">grade</dt>
+                <dd className="mt-0.5 text-[13px]">{card.grade}</dd>
+              </div>
+            </dl>
           </div>
-          <h1 className="mt-4 text-3xl font-bold">{passport.name}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Fluency score <span className="font-semibold text-foreground">{card.score}/100</span> ·
-            active {range}
+          <GradeSeal score={card.score} grade={card.grade} />
+        </div>
+
+        {/* Harness stamps + model chips */}
+        <div className="flex flex-wrap items-center gap-4 px-7 pb-5">
+          {card.harnesses.map((h, i) => (
+            <span
+              key={h}
+              className={`stamp stamp-in ${i % 2 ? 'text-destructive' : 'text-verify'}`}
+              style={
+                {
+                  '--stamp-rotate': `${i % 2 ? 4 : -5}deg`,
+                  animationDelay: `${450 + i * 250}ms`,
+                } as React.CSSProperties
+              }
+            >
+              {HARNESS_LABELS[h] ?? h}
+              <br />
+              <span className="font-normal opacity-80">admitted · {issued ?? '····'}</span>
+            </span>
+          ))}
+          {card.models.map((m) => (
+            <span
+              key={m}
+              className="inline-flex items-center gap-1 rounded-full border border-border bg-white/40 px-2.5 py-1 font-mono text-[11px] text-muted-foreground"
+              translate="no"
+            >
+              <Cpu size={12} weight="duotone" aria-hidden="true" />
+              {m}
+            </span>
+          ))}
+        </div>
+
+        {/* Entries */}
+        <div className="grid grid-cols-3 gap-2 px-7 pb-6 sm:grid-cols-6">
+          <Entry icon={TerminalWindow} label="sessions" value={String(card.totalSessions)} />
+          <Entry icon={ChatText} label="messages" value={fmt(card.totalMessages)} />
+          <Entry icon={Wrench} label="tool calls" value={fmt(card.totalToolCalls)} />
+          <Entry icon={Lightning} label="tokens out" value={fmt(card.totalOutputTokens)} />
+          <Entry icon={Clock} label="hours" value={String(card.activeHours)} />
+          <Entry icon={CalendarBlank} label="days" value={String(card.activeDays)} />
+        </div>
+
+        {/* Top tools */}
+        {card.topTools.length > 0 && (
+          <div className="px-7 pb-6">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              tool endorsements
+            </p>
+            <div className="space-y-1.5">
+              {card.topTools.slice(0, 6).map((t) => (
+                <div key={t.name} className="flex items-center gap-3 text-sm">
+                  <span className="w-32 truncate font-mono text-[11px]" translate="no">
+                    {t.name}
+                  </span>
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[#ded2b4]">
+                    <div
+                      className="h-full rounded-full bg-primary/80"
+                      style={{ width: `${(t.count / maxTool) * 100}%` }}
+                    />
+                  </div>
+                  <span className="w-10 text-right text-xs tabular-nums text-muted-foreground">
+                    {t.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Verification strip */}
+        <div className="border-t border-border/70 bg-white/30 px-7 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="flex items-center gap-2 text-sm">
+              {view.verification.enclaveSessions > 0 ? (
+                <>
+                  <SealCheck
+                    size={17}
+                    weight="duotone"
+                    className="text-verify"
+                    aria-hidden="true"
+                  />
+                  {view.verification.enclaveSessions} of {view.verification.totalSessions} session
+                  {view.verification.totalSessions === 1 ? '' : 's'} verified in a secure enclave
+                </>
+              ) : (
+                <>
+                  <WarningCircle
+                    size={17}
+                    weight="duotone"
+                    className="text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span className="text-muted-foreground">
+                    Sessions were format-verified server-side
+                  </span>
+                </>
+              )}
+            </span>
+            {view.verification.enclaveSessions > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void runVerification()}
+                disabled={verify.status === 'running'}
+              >
+                {verify.status === 'running' ? 'Verifying…' : 'Verify Proofs'}
+              </Button>
+            )}
+          </div>
+          <p aria-live="polite" className="mt-1 text-sm">
+            {verify.status === 'done' &&
+              (verify.failed === 0 ? (
+                <span className="text-verify">
+                  ✓ All {verify.verified} enclave signatures verified in your browser
+                </span>
+              ) : (
+                <span className="text-destructive">
+                  ✗ {verify.failed} of {verify.total} proofs failed verification
+                </span>
+              ))}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Signatures are checked locally with WebCrypto — no server trust required.{' '}
+            <a href="/about" className="text-primary underline-offset-2 hover:underline">
+              How verification works →
+            </a>
           </p>
         </div>
 
-        <CardContent className="space-y-8 p-6">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat icon={Terminal} label="sessions" value={String(card.totalSessions)} />
-            <Stat icon={MessageSquare} label="messages" value={fmt(card.totalMessages)} />
-            <Stat icon={Wrench} label="tool calls" value={fmt(card.totalToolCalls)} />
-            <Stat icon={Zap} label="output tokens" value={fmt(card.totalOutputTokens)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <Stat icon={Clock} label="active hours" value={String(card.activeHours)} />
-            <Stat icon={CalendarDays} label="active days" value={String(card.activeDays)} />
-          </div>
+        {/* MRZ */}
+        <div
+          className="select-none overflow-x-auto border-t border-border/70 bg-[#efe7d3] px-7 py-3 font-mono text-[12px] leading-6 tracking-[0.14em] text-[#3a2f22]"
+          aria-hidden="true"
+          translate="no"
+        >
+          <div>{mrz1}</div>
+          <div>{mrz2}</div>
+        </div>
+      </div>
 
-          <div>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Harnesses & Models
-            </h2>
-            <div className="flex flex-wrap gap-2">
-              {card.harnesses.map((h) => (
-                <Badge key={h}>{HARNESS_LABELS[h] ?? h}</Badge>
-              ))}
-              {card.models.map((m) => (
-                <Badge key={m} variant="outline">
-                  <Cpu className="mr-1 h-3 w-3" />
-                  {m}
-                </Badge>
-              ))}
-            </div>
-          </div>
+      {/* Share row */}
+      <div
+        className="page-rise mt-6 flex flex-wrap items-center justify-center gap-3"
+        style={{ animationDelay: '250ms' }}
+      >
+        <Button
+          variant="cover"
+          size="sm"
+          onClick={() => {
+            void navigator.clipboard.writeText(cardUrl)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          }}
+        >
+          <Copy size={15} weight="duotone" aria-hidden="true" /> {copied ? 'Copied!' : 'Copy Link'}
+        </Button>
+        <Button
+          variant="cover"
+          size="sm"
+          onClick={() =>
+            window.open(
+              `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(cardUrl)}`,
+              '_blank',
+              'noopener',
+            )
+          }
+        >
+          <XLogo size={15} weight="duotone" aria-hidden="true" /> Share on X
+        </Button>
+        {typeof navigator.share === 'function' && (
+          <Button
+            variant="cover"
+            size="sm"
+            onClick={() =>
+              void navigator
+                .share({ title: 'AI Passport', text: shareText, url: cardUrl })
+                .catch(() => {})
+            }
+          >
+            <ShareNetwork size={15} weight="duotone" aria-hidden="true" /> Share…
+          </Button>
+        )}
+      </div>
 
-          {card.topTools.length > 0 && (
-            <div>
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                Top Tools
-              </h2>
-              <div className="space-y-2">
-                {card.topTools.map((t) => (
-                  <div key={t.name} className="flex items-center gap-3 text-sm">
-                    <span className="w-32 truncate font-mono text-xs">{t.name}</span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary"
-                        style={{ width: `${(t.count / maxTool) * 100}%` }}
-                      />
-                    </div>
-                    <span className="w-12 text-right tabular-nums text-muted-foreground">
-                      {t.count}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Score Breakdown
-            </h2>
-            <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
-              {Object.entries(card.scoreBreakdown).map(([k, v]) => (
-                <div key={k} className="flex justify-between rounded-md bg-muted px-3 py-2">
-                  <span className="text-muted-foreground">{k}</span>
-                  <span className="tabular-nums">{v}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Verification
-            </h2>
-            <div className="space-y-3 rounded-lg border border-border p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-sm">
-                  {view.verification.enclaveSessions > 0 ? (
-                    <span className="flex items-center gap-2">
-                      <BadgeCheck className="h-4 w-4 text-primary" />
-                      {view.verification.enclaveSessions} of {view.verification.totalSessions}{' '}
-                      session{view.verification.totalSessions === 1 ? '' : 's'} analyzed inside a
-                      secure enclave
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-2 text-muted-foreground">
-                      <CircleAlert className="h-4 w-4" />
-                      Sessions were format-verified server-side (no enclave proofs yet)
-                    </span>
-                  )}
-                </div>
-                {view.verification.enclaveSessions > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void runVerification()}
-                    disabled={verify.status === 'running'}
-                  >
-                    {verify.status === 'running' ? 'Verifying…' : 'Verify proofs'}
-                  </Button>
-                )}
-              </div>
-              {verify.status === 'done' && (
-                <p
-                  className={`text-sm ${verify.failed === 0 ? 'text-primary' : 'text-destructive'}`}
-                >
-                  {verify.failed === 0
-                    ? `✓ All ${verify.verified} enclave signatures verified in your browser`
-                    : `✗ ${verify.failed} of ${verify.total} proofs failed verification`}
-                </p>
-              )}
-              <p className="text-xs text-muted-foreground">
-                Signatures are checked locally with WebCrypto — no server trust required.{' '}
-                {view.verification.attestation === 'dev' &&
-                  'Proofs are signed inside a Turnkey Verifiable Cloud enclave; this app does not yet independently verify the AWS Nitro attestation chain. '}
-                <a href="/about" className="text-primary hover:underline">
-                  How verification works →
-                </a>
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="mt-6 flex flex-col items-center gap-3">
+      <div
+        className="page-rise mt-10 flex flex-col items-center gap-3"
+        style={{ animationDelay: '350ms' }}
+      >
         <TurnkeyBadge />
-        <p className="text-center text-xs text-muted-foreground">
+        <p className="text-center text-xs text-foreground/60">
           Statistics computed from genuine harness session traces.{' '}
-          <a href="/" className="text-primary hover:underline">
-            Build your own AI Passport →
+          <a href="/" className="text-foil hover:underline">
+            Get Your Own AI Passport →
           </a>
         </p>
       </div>
