@@ -9,6 +9,7 @@ import {
   VerifierError,
 } from './verifier'
 import { VERIFIER_DEPLOYMENT } from './deployment'
+import { renderCardOg } from './og'
 import {
   authenticationOptions,
   clearSessionCookie,
@@ -392,6 +393,79 @@ app.get('/api/passports/slug/:slug', async (c) => {
       proof: r.proof ? (JSON.parse(r.proof) as unknown) : null,
     })),
   })
+})
+
+// ---------- Share previews ----------
+
+// Dynamic OG image: a 1200×630 passport render. /og/default for the landing.
+app.get('/og/:slug', async (c) => {
+  const slug = c.req.param('slug').replace(/\.png$/, '')
+  try {
+    if (slug === 'default') return await renderCardOg('AI Passport', null)
+    const passport = await c.env.DB.prepare('SELECT id, name FROM passports WHERE slug = ?')
+      .bind(slug)
+      .first<{ id: string; name: string }>()
+    if (!passport) return c.json({ error: 'not found' }, 404)
+    const { results } = await c.env.DB.prepare(
+      `SELECT harness, started_at, ended_at, message_count, tool_call_count,
+              input_tokens, output_tokens, models, tool_counts
+       FROM sessions WHERE passport_id = ?`,
+    )
+      .bind(passport.id)
+      .all<SessionRow>()
+    return await renderCardOg(passport.name, aggregate(results ?? []))
+  } catch (e) {
+    console.error('og render failed:', e)
+    return c.json({ error: 'preview unavailable' }, 500)
+  }
+})
+
+// Card pages get their meta injected server-side — crawlers don't run JS.
+app.get('/p/:slug', async (c) => {
+  const slug = c.req.param('slug')
+  const assetRes = await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url), c.req.raw))
+  const passport = await c.env.DB.prepare('SELECT id, name FROM passports WHERE slug = ?')
+    .bind(slug)
+    .first<{ id: string; name: string }>()
+  if (!passport) return assetRes
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT harness, started_at, ended_at, message_count, tool_call_count,
+            input_tokens, output_tokens, models, tool_counts
+     FROM sessions WHERE passport_id = ?`,
+  )
+    .bind(passport.id)
+    .all<SessionRow>()
+  const card = aggregate(results ?? [])
+  const origin = new URL(c.req.url).origin
+  const title = `${passport.name} — ${card.grade} · AI Passport`
+  const description = `${card.score}/100 AI fluency · ${card.totalSessions} enclave-verified sessions · ${card.totalToolCalls} tool calls. Verify the signatures yourself.`
+  const image = `${origin}/og/${slug}.png`
+  const url = `${origin}/p/${slug}`
+
+  const content: Record<string, string> = {
+    'og:title': title,
+    'og:description': description,
+    'og:image': image,
+    'og:url': url,
+    'twitter:title': title,
+    'twitter:description': description,
+    'twitter:image': image,
+  }
+  return new HTMLRewriter()
+    .on('title', {
+      element(el) {
+        el.setInnerContent(title)
+      },
+    })
+    .on('meta', {
+      element(el) {
+        const key = el.getAttribute('property') ?? el.getAttribute('name')
+        if (key && content[key]) el.setAttribute('content', content[key])
+        if (key === 'description') el.setAttribute('content', description)
+      },
+    })
+    .transform(assetRes)
 })
 
 // Everything else falls through to static frontend assets (SPA).
