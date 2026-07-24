@@ -6,6 +6,7 @@
 
 mod claude_code;
 mod codex;
+mod heuristics;
 
 use serde::Serialize;
 use serde_json::Value;
