@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseTrace, ParseError } from '../src/parsers'
+import { parseClaudeCode } from '../src/parsers/claudeCode'
 import { aggregate } from '../src/score'
 
 const claudeTrace = [
@@ -113,6 +114,102 @@ describe('parseTrace: errors', () => {
   it('tolerates corrupt lines inside a valid trace', () => {
     const s = parseTrace(claudeTrace + '\n{broken json')
     expect(s.externalId).toBe('abc-123')
+  })
+})
+
+describe('claude code v2 metrics', () => {
+  const L = (o: object) => o
+  const lines = [
+    L({ type: 'user', sessionId: 's1', cwd: '/repo', timestamp: '2026-07-01T10:00:00Z',
+        message: { content: 'add a feature' } }),
+    // parallel batch: two tool_use sharing a requestId
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r1', timestamp: '2026-07-01T10:00:05Z',
+        message: { model: 'claude-fable-5', usage: { input_tokens: 10, output_tokens: 5 },
+          content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/src/a.ts' } }] } }),
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r1',
+        message: { content: [{ type: 'tool_use', id: 't2', name: 'Bash',
+          input: { command: 'cd worker && npx vitest run' } }] } }),
+    // failing test result (red)
+    L({ type: 'user', sessionId: 's1', message: { content: [
+        { type: 'tool_result', tool_use_id: 't2', is_error: true }] } }),
+    // edit via Write (create): 3 lines
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r2',
+        message: { content: [{ type: 'tool_use', id: 't3', name: 'Write',
+          input: { file_path: '/repo/src/a.ts', content: 'a\nb\nc' } }] } }),
+    L({ type: 'user', sessionId: 's1', toolUseResult: { type: 'create', filePath: '/repo/src/a.ts',
+        content: 'a\nb\nc', structuredPatch: [] },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't3' }] } }),
+    // edit on generated path — excluded from LOC/languages
+    L({ type: 'user', sessionId: 's1', toolUseResult: { type: 'create',
+        filePath: '/repo/package-lock.json', content: 'x\n'.repeat(100), structuredPatch: [] },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't3b' }] } }),
+    // Edit with structuredPatch: +2 -1 on a .tsx file (aliases to ts)
+    L({ type: 'user', sessionId: 's1', toolUseResult: { filePath: '/repo/src/B.tsx',
+        structuredPatch: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 3,
+          lines: [' keep', '+new1', '+new2', '-old'] }] },
+        message: { content: [{ type: 'tool_result', tool_use_id: 't3c' }] } }),
+    // passing test after edits (green + verified cycle + red→green cycle)
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r3',
+        message: { content: [{ type: 'tool_use', id: 't4', name: 'Bash',
+          input: { command: 'cd worker && npx vitest run', run_in_background: false } }] } }),
+    L({ type: 'user', sessionId: 's1', message: { content: [
+        { type: 'tool_result', tool_use_id: 't4', is_error: false }] } }),
+    // commit then push → shipped
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r4',
+        message: { content: [{ type: 'tool_use', id: 't5', name: 'Bash',
+          input: { command: 'git add -A && git commit -m "feat"' } }] } }),
+    L({ type: 'user', sessionId: 's1', message: { content: [
+        { type: 'tool_result', tool_use_id: 't5' }] } }),
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r5',
+        message: { content: [{ type: 'tool_use', id: 't6', name: 'Bash',
+          input: { command: 'git push origin main', run_in_background: true } }] } }),
+    L({ type: 'user', sessionId: 's1', message: { content: [
+        { type: 'tool_result', tool_use_id: 't6' }] } }),
+    // second human turn, then delegation + skill + mcp
+    L({ type: 'user', sessionId: 's1', message: { content: 'now polish it' } }),
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r6',
+        message: { content: [{ type: 'tool_use', id: 't7', name: 'Agent',
+          input: { prompt: 'x', description: 'y' } }] } }),
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r7',
+        message: { content: [{ type: 'tool_use', id: 't8', name: 'Skill',
+          input: { skill: 'dataviz' } }] } }),
+    L({ type: 'assistant', sessionId: 's1', requestId: 'r8', attributionMcpServer: 'claude-in-chrome',
+        message: { content: [{ type: 'tool_use', id: 't9',
+          name: 'mcp__claude-in-chrome__navigate', input: { url: 'x' } }] } }),
+    // meta and sidechain lines must not count as human turns or main-chain calls
+    L({ type: 'user', sessionId: 's1', isMeta: true, message: { content: 'injected' } }),
+    L({ type: 'user', sessionId: 's1', message: { content: '<system-reminder>noise' } }),
+    L({ type: 'assistant', sessionId: 's1', isSidechain: true,
+        message: { content: [{ type: 'tool_use', id: 't10', name: 'Read', input: {} }] } }),
+  ]
+
+  it('extracts v2 metrics', () => {
+    const s = parseClaudeCode(lines)
+    expect(s.locAdded).toBe(5)            // 3 (create) + 2 (patch); lockfile excluded
+    expect(s.locRemoved).toBe(1)
+    expect(s.languages).toEqual({ ts: 6 }) // 3 + (2+1) on .ts/.tsx
+    expect(s.commandCounts).toEqual({ test: 2, git: 2 })
+    expect(s.humanTurns).toBe(2)
+    expect(s.longestRun).toBe(6)          // t1..t6 before second human turn
+    expect(s.agenticity).toBe(4.5)        // runs [6, 3] → median 4.5
+    expect(s.parallelBatches).toBe(1)     // r1 has two tool_use
+    expect(s.delegationCalls).toBe(1)
+    expect(s.verifiedEditCycles).toBe(1)
+    expect(s.redGreenCycles).toBe(1)      // fail t2 → edits → pass t4
+    expect(s.outcome).toBe('shipped')
+    expect(s.skills).toEqual(['dataviz'])
+    expect(s.mcpServers).toEqual(['claude-in-chrome'])
+    expect(s.backgroundTasks).toBe(1)     // t6 run_in_background
+  })
+
+  it('zeroes v2 metrics on minimal traces', () => {
+    const s = parseClaudeCode([
+      { type: 'user', sessionId: 's2', message: { content: 'hi' } },
+      { type: 'assistant', sessionId: 's2', message: { model: 'claude-fable-5', content: [] } },
+    ])
+    expect(s.locAdded).toBe(0)
+    expect(s.outcome).toBe('trivial')
+    expect(s.skills).toEqual([])
   })
 })
 

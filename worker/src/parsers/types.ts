@@ -15,6 +15,21 @@ export interface SessionStats {
   cwd?: string | null
   /** Truncated SHA-256 of cwd; set by the enclave or hashed locally. */
   projectHash?: string | null
+  locAdded: number
+  locRemoved: number
+  languages: Record<string, number>
+  commandCounts: Record<string, number>
+  humanTurns: number
+  agenticity: number
+  longestRun: number
+  parallelBatches: number
+  delegationCalls: number
+  verifiedEditCycles: number
+  redGreenCycles: number
+  outcome: string
+  skills: string[]
+  mcpServers: string[]
+  backgroundTasks: number
 }
 
 export class ParseError extends Error {}

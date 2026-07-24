@@ -39,6 +39,21 @@ export function parseCodex(lines: unknown[]): SessionStats {
     outputTokens: 0,
     models: [],
     toolCounts: {},
+    locAdded: 0,
+    locRemoved: 0,
+    languages: {},
+    commandCounts: {},
+    humanTurns: 0,
+    agenticity: 0,
+    longestRun: 0,
+    parallelBatches: 0,
+    delegationCalls: 0,
+    verifiedEditCycles: 0,
+    redGreenCycles: 0,
+    outcome: '',
+    skills: [],
+    mcpServers: [],
+    backgroundTasks: 0,
   }
   const models = new Set<string>()
   let lastUsage: { input_tokens?: number; output_tokens?: number } | undefined
