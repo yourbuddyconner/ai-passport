@@ -7,6 +7,7 @@ import {
   attestationMode,
   fetchQuorumPublicKey,
   mergeLocalV2Metrics,
+  parseCiphertextEnvelope,
   shouldPreserveV2,
   VerifierError,
 } from './verifier'
@@ -285,21 +286,25 @@ app.post('/api/passports/:id/sessions', async (c) => {
   // No fallback is possible (there is nothing to parse locally); errors are
   // surfaced to the client.
   if (c.req.header('content-type')?.includes('application/json')) {
-    let body: { ciphertext?: string }
+    let body: { ciphertext?: string; ciphertextB64?: string }
     try {
-      body = JSON.parse(text) as { ciphertext?: string }
+      body = JSON.parse(text) as { ciphertext?: string; ciphertextB64?: string }
     } catch {
       return c.json({ error: 'request body is not valid JSON' }, 400)
     }
-    if (!body.ciphertext || !/^[0-9a-f]+$/.test(body.ciphertext))
-      return c.json({ error: 'ciphertext (hex) is required' }, 400)
+    // Legacy hex envelope or the (gzip+)base64 envelope from Task 1 — either
+    // is carried opaquely to the enclave, never transcoded here (transcoding
+    // a large base64 ciphertext to hex in the Worker is what triggered
+    // "worker exceeded resource limits" on big Codex traces).
+    const envelope = parseCiphertextEnvelope(body)
+    if (!envelope) return c.json({ error: 'ciphertext (hex) or ciphertextB64 is required' }, 400)
     if (!c.env.VERIFIER_URL) return c.json({ error: 'no verifier configured' }, 503)
     try {
-      const analysis = await analyzeCiphertext(c.env.VERIFIER_URL, id, body.ciphertext)
+      const analysis = await analyzeCiphertext(c.env.VERIFIER_URL, id, envelope)
       stats = analysis.stats
       verification = 'enclave'
       proof = JSON.stringify(analysis.proof)
-      ciphertext = body.ciphertext
+      ciphertext = envelope.value
       // No local merge is possible on this path (there is no plaintext to
       // parse), so an old enclave's zero-filled v2 fields must not
       // overwrite a previously-stored v2 row.

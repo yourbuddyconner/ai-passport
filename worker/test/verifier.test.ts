@@ -1,10 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   verifyProofSignature,
   mapRustStats,
   hasV2Metrics,
   mergeLocalV2Metrics,
   shouldPreserveV2,
+  analyzeCiphertext,
+  parseCiphertextEnvelope,
+  VerifierError,
   type AppProof,
   type RustSessionStats,
 } from '../src/verifier'
@@ -312,5 +315,115 @@ describe('shouldPreserveV2', () => {
 
   it('no enclave ran (local fallback parse): never preserve', () => {
     expect(shouldPreserveV2(null, false)).toBe(false)
+  })
+})
+
+describe('parseCiphertextEnvelope', () => {
+  it('picks the hex ciphertext field', () => {
+    expect(parseCiphertextEnvelope({ ciphertext: 'deadbeef' })).toEqual({
+      encoding: 'hex',
+      value: 'deadbeef',
+    })
+  })
+
+  it('picks the base64 ciphertextB64 field when no hex ciphertext is present', () => {
+    expect(parseCiphertextEnvelope({ ciphertextB64: 'SGVsbG8=' })).toEqual({
+      encoding: 'base64',
+      value: 'SGVsbG8=',
+    })
+  })
+
+  it('prefers hex ciphertext when both fields are present', () => {
+    expect(
+      parseCiphertextEnvelope({ ciphertext: 'deadbeef', ciphertextB64: 'SGVsbG8=' }),
+    ).toEqual({ encoding: 'hex', value: 'deadbeef' })
+  })
+
+  it('rejects a ciphertext field that is not valid hex, falling back to ciphertextB64', () => {
+    expect(
+      parseCiphertextEnvelope({ ciphertext: 'not-hex!', ciphertextB64: 'SGVsbG8=' }),
+    ).toEqual({ encoding: 'base64', value: 'SGVsbG8=' })
+  })
+
+  it('returns null when neither field is present', () => {
+    expect(parseCiphertextEnvelope({})).toBeNull()
+  })
+
+  it('returns null for an empty ciphertextB64', () => {
+    expect(parseCiphertextEnvelope({ ciphertextB64: '' })).toBeNull()
+  })
+})
+
+describe('analyzeCiphertext (enclave pass-through)', () => {
+  const passportId = 'passport-1'
+
+  function mockFetchOnce(payload: Record<string, unknown>, proof: AppProof) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ payload, proof }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function buildSignedResponse(stats: RustSessionStats) {
+    const payload = {
+      passport_id: passportId,
+      trace_sha256: 'abc123',
+      stats,
+      analyzed_at: 1234,
+    }
+    const { proof } = await makeProof(JSON.stringify(payload))
+    return { payload, proof }
+  }
+
+  it('forwards a hex envelope as {ciphertext} verbatim, with no transcoding', async () => {
+    const { payload, proof } = await buildSignedResponse(baseRustStats())
+    const fetchMock = mockFetchOnce(payload, proof)
+
+    const result = await analyzeCiphertext(
+      'https://verifier.example',
+      passportId,
+      { encoding: 'hex', value: 'deadbeef' },
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://verifier.example/analyze')
+    expect(JSON.parse(init.body as string)).toEqual({ ciphertext: 'deadbeef' })
+    expect(result.stats.externalId).toBe('sess-1')
+  })
+
+  it('forwards a base64 envelope as {ciphertext_b64} verbatim, with no transcoding', async () => {
+    const { payload, proof } = await buildSignedResponse(baseRustStats())
+    const fetchMock = mockFetchOnce(payload, proof)
+    const b64Value = 'SGVsbG8sIHdvcmxkIQ=='
+
+    await analyzeCiphertext('https://verifier.example', passportId, {
+      encoding: 'base64',
+      value: b64Value,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body as string)).toEqual({ ciphertext_b64: b64Value })
+  })
+
+  it('rejects when the enclave proof is bound to a different passport', async () => {
+    const { payload, proof } = await buildSignedResponse(baseRustStats())
+    mockFetchOnce(payload, proof)
+
+    await expect(
+      analyzeCiphertext('https://verifier.example', 'a-different-passport', {
+        encoding: 'hex',
+        value: 'deadbeef',
+      }),
+    ).rejects.toBeInstanceOf(VerifierError)
   })
 })

@@ -221,20 +221,55 @@ export async function fetchQuorumPublicKey(verifierUrl: string): Promise<string>
 }
 
 /**
+ * An already-encrypted envelope as it arrived on the wire, tagged by
+ * encoding. Carried opaquely end-to-end — the Worker never transcodes it
+ * (a hex re-encoding of a large base64 ciphertext is what blew the Worker's
+ * resource limits on big Codex traces).
+ */
+export type CiphertextEnvelope =
+  | { encoding: 'hex'; value: string }
+  | { encoding: 'base64'; value: string }
+
+/**
+ * Pick the ciphertext envelope out of a parsed request body: legacy hex
+ * `{ciphertext}`, or the (gzip+)base64 `{ciphertextB64}` envelope from the
+ * browser's large-trace-uploads path. Neither present (or hex that fails
+ * its hex-digit sanity check) yields null, which the caller turns into a 400.
+ */
+export function parseCiphertextEnvelope(body: {
+  ciphertext?: unknown
+  ciphertextB64?: unknown
+}): CiphertextEnvelope | null {
+  if (typeof body.ciphertext === 'string' && /^[0-9a-f]+$/.test(body.ciphertext))
+    return { encoding: 'hex', value: body.ciphertext }
+  if (typeof body.ciphertextB64 === 'string' && body.ciphertextB64.length > 0)
+    return { encoding: 'base64', value: body.ciphertextB64 }
+  return null
+}
+
+/**
  * Send an already-encrypted envelope to the enclave and verify the returned
  * proof: signature over the exact payload bytes and the passport binding.
  * (When the caller encrypted client-side we never see the plaintext, so the
  * trace hash in the signed payload is recorded, not re-derived.)
+ *
+ * The envelope is forwarded verbatim: hex arrives as `{ciphertext}`, base64
+ * as `{ciphertext_b64}` (the enclave's wire format, snake_case) — no
+ * re-encoding happens in the Worker either way.
  */
 export async function analyzeCiphertext(
   verifierUrl: string,
   passportId: string,
-  ciphertext: string,
+  envelope: CiphertextEnvelope,
 ): Promise<EnclaveAnalysis> {
+  const requestBody =
+    envelope.encoding === 'hex'
+      ? { ciphertext: envelope.value }
+      : { ciphertext_b64: envelope.value }
   const analyzeRes = await fetch(`${verifierUrl}/analyze`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ciphertext }),
+    body: JSON.stringify(requestBody),
   })
   if (!analyzeRes.ok) {
     const body = (await analyzeRes.json().catch(() => null)) as { error?: string } | null
@@ -280,7 +315,7 @@ export async function analyzeViaEnclave(
   const publicKey = await fetchQuorumPublicKey(verifierUrl)
   const ciphertext = await encryptToQuorumKey(publicKey, new TextEncoder().encode(envelope))
 
-  const analysis = await analyzeCiphertext(verifierUrl, passportId, ciphertext)
+  const analysis = await analyzeCiphertext(verifierUrl, passportId, { encoding: 'hex', value: ciphertext })
   if (analysis.traceSha256 !== (await sha256Hex(trace)))
     throw new VerifierError('enclave proof trace hash mismatch')
   return { ciphertext, analysis }
