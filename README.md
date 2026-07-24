@@ -56,6 +56,19 @@ cd ../web && npm run build
 cd ../worker && npx wrangler deploy
 ```
 
+**Migration ordering matters.** Whenever `worker/migrations/` has new files not yet applied to
+the remote D1 database (e.g. `0005_metrics.sql`), apply them **before** running `wrangler deploy`:
+
+```sh
+npx wrangler d1 execute ai-passport --remote --file=migrations/0005_metrics.sql
+npx wrangler deploy
+```
+
+The new worker's `sessions` INSERT/UPDATE statements name the new columns unconditionally, so
+deploying worker-first — before the columns exist — takes down every `/api/passports/:id/sessions`
+and card endpoint until the migration lands (a full outage). Table-first is safe: the old worker
+running against the new schema simply ignores the extra columns.
+
 ## API
 
 - `POST /api/passports` `{name}` → `{id, slug, editToken}`

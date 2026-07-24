@@ -6,6 +6,7 @@ import {
   analyzeViaEnclave,
   attestationMode,
   fetchQuorumPublicKey,
+  mergeLocalV2Metrics,
   VerifierError,
 } from './verifier'
 import { VERIFIER_DEPLOYMENT } from './deployment'
@@ -310,6 +311,18 @@ app.post('/api/passports/:id/sessions', async (c) => {
         verification = 'enclave'
         proof = JSON.stringify(result.analysis.proof)
         ciphertext = result.ciphertext
+        // Old (pre-v2) enclave builds return stats without the v2 metrics
+        // fields; mapRustStats() zero-fills them. Backfill from the local
+        // heuristic parser so uploads through an old enclave don't store
+        // zeros for loc/language/agenticity/outcome/etc. Never fail the
+        // upload over this — the enclave's v1 stats and proof still stand.
+        if (!result.analysis.hasV2Metrics) {
+          try {
+            stats = mergeLocalV2Metrics(stats, parseTrace(text))
+          } catch {
+            // keep the zero-filled enclave stats
+          }
+        }
       } catch (e) {
         // 422 = the enclave parsed the trace and rejected it as invalid.
         if (e instanceof VerifierError && e.status === 422)

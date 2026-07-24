@@ -47,16 +47,17 @@ static GENERATED_RX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub(crate) fn deprefix(cmd: &str) -> String {
-    let mut segs: Vec<&str> = cmd.split(';').flat_map(|s| s.split("&&")).collect();
-    while let Some(first) = segs.first() {
-        let probe = format!("{} ", first.trim());
+    let segs: Vec<&str> = cmd.split(';').flat_map(|s| s.split("&&")).collect();
+    let mut i = 0;
+    while i < segs.len() {
+        let probe = format!("{} ", segs[i].trim());
         if PREFIX.is_match(&probe) {
-            segs.remove(0);
+            i += 1;
         } else {
             break;
         }
     }
-    let joined = segs.join("&&").trim().to_string();
+    let joined = segs[i..].join("&&").trim().to_string();
     if joined.is_empty() { cmd.to_string() } else { joined }
 }
 
@@ -166,6 +167,12 @@ mod tests {
         assert_eq!(deprefix("ENVIRONMENT=dev && make deploy"), "make deploy");
         assert_eq!(deprefix("export FOO=1; nvm use 22; pnpm test"), "pnpm test");
         assert_eq!(deprefix("git status"), "git status");
+    }
+
+    #[test]
+    fn deprefix_handles_huge_prefix_run_without_quadratic_blowup() {
+        let cmd = format!("{}{}", "cd x;".repeat(50_000), "pnpm test");
+        assert_eq!(classify_command(&cmd), "test");
     }
 
     #[test]

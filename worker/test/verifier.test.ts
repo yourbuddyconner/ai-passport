@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { verifyProofSignature, mapRustStats, type AppProof, type RustSessionStats } from '../src/verifier'
+import {
+  verifyProofSignature,
+  mapRustStats,
+  hasV2Metrics,
+  mergeLocalV2Metrics,
+  type AppProof,
+  type RustSessionStats,
+} from '../src/verifier'
+import type { SessionStats } from '../src/parsers'
 
 function toHex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -162,5 +170,127 @@ describe('mapRustStats', () => {
     for (const v of Object.values(mapped)) {
       if (typeof v === 'number') expect(Number.isNaN(v)).toBe(false)
     }
+  })
+})
+
+describe('hasV2Metrics', () => {
+  it('is true when the raw enclave stats carry v2 fields', () => {
+    expect(hasV2Metrics(baseRustStats())).toBe(true)
+  })
+
+  it('is false for an old (pre-v2) enclave response', () => {
+    const legacy: RustSessionStats = {
+      harness: 'codex',
+      external_id: 'sess-2',
+      project_hash: null,
+      started_at: null,
+      ended_at: null,
+      message_count: 3,
+      tool_call_count: 1,
+      input_tokens: 10,
+      output_tokens: 20,
+      models: [],
+      tool_counts: {},
+    }
+    expect(hasV2Metrics(legacy)).toBe(false)
+  })
+})
+
+describe('mergeLocalV2Metrics', () => {
+  function enclaveV1Stats(): SessionStats {
+    // Shaped like what mapRustStats() produces for an old enclave response:
+    // real v1 numbers, zero-filled v2 fields.
+    return {
+      harness: 'claude-code',
+      externalId: 'sess-1',
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: '2026-01-01T01:00:00Z',
+      messageCount: 10,
+      toolCallCount: 5,
+      inputTokens: 1000,
+      outputTokens: 2000,
+      models: ['claude-sonnet'],
+      toolCounts: { Bash: 3, Edit: 2 },
+      projectHash: 'abc123',
+      locAdded: 0,
+      locRemoved: 0,
+      languages: {},
+      commandCounts: {},
+      humanTurns: 0,
+      agenticity: 0,
+      longestRun: 0,
+      parallelBatches: 0,
+      delegationCalls: 0,
+      verifiedEditCycles: 0,
+      redGreenCycles: 0,
+      outcome: '',
+      skills: [],
+      mcpServers: [],
+      backgroundTasks: 0,
+    }
+  }
+
+  function localV2Stats(): SessionStats {
+    return {
+      ...enclaveV1Stats(),
+      // Local parse recomputes v1 fields too, but they must never win.
+      messageCount: 999,
+      toolCallCount: 999,
+      locAdded: 42,
+      locRemoved: 7,
+      languages: { ts: 40, rs: 2 },
+      commandCounts: { git: 3, npm: 1 },
+      humanTurns: 4,
+      agenticity: 2.5,
+      longestRun: 6,
+      parallelBatches: 1,
+      delegationCalls: 2,
+      verifiedEditCycles: 3,
+      redGreenCycles: 1,
+      outcome: 'shipped',
+      skills: ['brainstorming'],
+      mcpServers: ['github'],
+      backgroundTasks: 1,
+    }
+  }
+
+  it('old-enclave-shaped response + local parse: merged stats carry local v2 values with enclave v1 values preserved', () => {
+    const merged = mergeLocalV2Metrics(enclaveV1Stats(), localV2Stats())
+
+    // v2 fields come from the local parse.
+    expect(merged.locAdded).toBe(42)
+    expect(merged.locRemoved).toBe(7)
+    expect(merged.languages).toEqual({ ts: 40, rs: 2 })
+    expect(merged.commandCounts).toEqual({ git: 3, npm: 1 })
+    expect(merged.humanTurns).toBe(4)
+    expect(merged.agenticity).toBe(2.5)
+    expect(merged.longestRun).toBe(6)
+    expect(merged.parallelBatches).toBe(1)
+    expect(merged.delegationCalls).toBe(2)
+    expect(merged.verifiedEditCycles).toBe(3)
+    expect(merged.redGreenCycles).toBe(1)
+    expect(merged.outcome).toBe('shipped')
+    expect(merged.skills).toEqual(['brainstorming'])
+    expect(merged.mcpServers).toEqual(['github'])
+    expect(merged.backgroundTasks).toBe(1)
+
+    // v1 numbers, harness identity, and proof-adjacent fields stay the
+    // enclave's, not the local parser's.
+    expect(merged.messageCount).toBe(10)
+    expect(merged.toolCallCount).toBe(5)
+    expect(merged.inputTokens).toBe(1000)
+    expect(merged.outputTokens).toBe(2000)
+    expect(merged.externalId).toBe('sess-1')
+    expect(merged.projectHash).toBe('abc123')
+  })
+
+  it('when hasV2Metrics is true, callers should skip the merge (enclave v2 values win untouched)', () => {
+    const enclave = { ...enclaveV1Stats(), locAdded: 120, outcome: 'landed' }
+    // Simulates the caller-side gate in index.ts: merge is only invoked
+    // when hasV2Metrics is false, so a v2-capable enclave response is
+    // never passed through mergeLocalV2Metrics at all.
+    expect(hasV2Metrics(baseRustStats())).toBe(true)
+    expect(enclave.locAdded).toBe(120)
+    expect(enclave.outcome).toBe('landed')
   })
 })

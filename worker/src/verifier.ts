@@ -20,6 +20,14 @@ export interface EnclaveAnalysis {
   traceSha256: string
   analyzedAt: number
   proof: AppProof
+  /**
+   * Whether the raw enclave response actually contained the v2 metrics
+   * fields (loc/language/agenticity/outcome/etc). Old (pre-v2) enclave
+   * builds omit them entirely, and mapRustStats() zero-fills them — callers
+   * that need real numbers should fall back to local parsing when this is
+   * false rather than trust the zeros.
+   */
+  hasV2Metrics: boolean
 }
 
 export class VerifierError extends Error {
@@ -110,6 +118,46 @@ function numberRecord(rec: Record<string, number | string> | undefined): Record<
   return Object.fromEntries(Object.entries(rec ?? {}).map(([k, v]) => [k, Number(v)]))
 }
 
+/**
+ * True when the raw enclave stats actually carried v2 fields. Any v2 field
+ * is sufficient to detect this (the enclave always emits all of them or
+ * none), so we check one that is unambiguous even for a legitimately empty
+ * trace: `loc_added` is always present (possibly `0`) on v2 builds and
+ * always absent on pre-v2 builds.
+ */
+export function hasV2Metrics(s: RustSessionStats): boolean {
+  return s.loc_added !== undefined
+}
+
+/**
+ * Copy only the v2 metric fields from a locally-parsed trace onto
+ * enclave-derived stats, leaving the enclave's v1 numbers, verification
+ * level, and proof untouched.
+ */
+export function mergeLocalV2Metrics(
+  enclaveStats: SessionStats,
+  localStats: SessionStats,
+): SessionStats {
+  return {
+    ...enclaveStats,
+    locAdded: localStats.locAdded,
+    locRemoved: localStats.locRemoved,
+    languages: localStats.languages,
+    commandCounts: localStats.commandCounts,
+    humanTurns: localStats.humanTurns,
+    agenticity: localStats.agenticity,
+    longestRun: localStats.longestRun,
+    parallelBatches: localStats.parallelBatches,
+    delegationCalls: localStats.delegationCalls,
+    verifiedEditCycles: localStats.verifiedEditCycles,
+    redGreenCycles: localStats.redGreenCycles,
+    outcome: localStats.outcome,
+    skills: localStats.skills,
+    mcpServers: localStats.mcpServers,
+    backgroundTasks: localStats.backgroundTasks,
+  }
+}
+
 /** Map the enclave's snake_case wire format to the worker's SessionStats shape. */
 export function mapRustStats(s: RustSessionStats): SessionStats {
   return {
@@ -197,6 +245,7 @@ export async function analyzeCiphertext(
     traceSha256: signed.trace_sha256,
     analyzedAt: Number(signed.analyzed_at),
     proof: result.proof,
+    hasV2Metrics: hasV2Metrics(signed.stats),
   }
 }
 

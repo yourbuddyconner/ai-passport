@@ -11,6 +11,11 @@ describe('deprefix', () => {
     expect(deprefix('export FOO=1; nvm use 22; pnpm test')).toBe('pnpm test')
     expect(deprefix('git status')).toBe('git status')
   })
+
+  it('handles a huge run of prefix segments without quadratic blowup (perf sanity)', () => {
+    const cmd = 'cd x;'.repeat(50_000) + 'pnpm test'
+    expect(classifyCommand(cmd)).toBe('test')
+  })
 })
 
 describe('classifyCommand', () => {

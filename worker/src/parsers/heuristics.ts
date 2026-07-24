@@ -22,8 +22,9 @@ const RULES: Array<[CommandCategory, RegExp]> = [
 
 export function deprefix(cmd: string): string {
   const segs = cmd.split(/&&|;/)
-  while (segs.length && PREFIX.test(segs[0].trim() + ' ')) segs.shift()
-  const joined = segs.join('&&').trim()
+  let i = 0
+  while (i < segs.length && PREFIX.test(segs[i].trim() + ' ')) i++
+  const joined = segs.slice(i).join('&&').trim()
   return joined || cmd
 }
 
