@@ -211,6 +211,23 @@ describe('claude code v2 metrics', () => {
     expect(s.outcome).toBe('trivial')
     expect(s.skills).toEqual([])
   })
+
+  it('ignores sidechain attribution and trims trailing newlines', () => {
+    const s = parseClaudeCode([
+      { type: 'user', sessionId: 's3', message: { content: 'go' } },
+      { type: 'system', sessionId: 's3', isSidechain: true, attributionSkill: 'sneaky',
+        attributionMcpServer: 'sneaky-server' },
+      { type: 'assistant', sessionId: 's3',
+        message: { content: [{ type: 'tool_use', id: 'w1', name: 'Write',
+          input: { file_path: '/repo/x.py', content: 'a\nb\n' } }] } },
+      { type: 'user', sessionId: 's3', toolUseResult: { type: 'create', filePath: '/repo/x.py',
+        content: 'a\nb\n', structuredPatch: [] },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'w1' }] } },
+    ])
+    expect(s.skills).toEqual([])
+    expect(s.mcpServers).toEqual([])
+    expect(s.locAdded).toBe(2)
+  })
 })
 
 describe('aggregate', () => {

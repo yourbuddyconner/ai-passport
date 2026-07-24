@@ -113,9 +113,9 @@ export function parseClaudeCode(lines: unknown[]): SessionStats {
       if (!stats.startedAt || o.timestamp < stats.startedAt) stats.startedAt = o.timestamp
       if (!stats.endedAt || o.timestamp > stats.endedAt) stats.endedAt = o.timestamp
     }
+    if (o.isSidechain) continue
     if (o.attributionSkill) skills.add(String(o.attributionSkill))
     if (o.attributionMcpServer) mcpServers.add(String(o.attributionMcpServer))
-    if (o.isSidechain) continue
     if (o.type !== 'user' && o.type !== 'assistant') continue
     stats.messageCount++
 
@@ -195,9 +195,9 @@ export function parseClaudeCode(lines: unknown[]): SessionStats {
         let add = 0
         let rem = 0
         if (r.type === 'create' && typeof r.content === 'string') {
-          add = r.content.split('\n').length
-        }
-        if (Array.isArray(r.structuredPatch)) {
+          const body = r.content.endsWith('\n') ? r.content.slice(0, -1) : r.content
+          add = body === '' ? 0 : body.split('\n').length
+        } else if (Array.isArray(r.structuredPatch)) {
           for (const hunk of r.structuredPatch) {
             for (const l of hunk.lines ?? []) {
               if (l.startsWith('+')) add++

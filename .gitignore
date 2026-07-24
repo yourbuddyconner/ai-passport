@@ -5,3 +5,7 @@ dist/
 *.log
 .DS_Store
 verifier/out/
+verifier/models/
+verifier/bench-data/
+verifier/target-linux/
+.superpowers/
