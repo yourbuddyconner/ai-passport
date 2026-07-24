@@ -148,7 +148,10 @@ app.get('/api/me', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, created_at, project_hash
+            input_tokens, output_tokens, models, tool_counts, verification, created_at, project_hash,
+            loc_added, loc_removed, languages, command_counts, human_turns, agenticity, longest_run,
+            parallel_batches, delegation_calls, verified_edit_cycles, red_green_cycles, outcome,
+            skills, mcp_servers, background_tasks
      FROM sessions WHERE passport_id = ? ORDER BY started_at DESC`,
   )
     .bind(passport.id)
@@ -347,7 +350,10 @@ app.post('/api/passports/:id/sessions', async (c) => {
       `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
          tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
          tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
-         project_hash = ? WHERE id = ?`,
+         project_hash = ?, loc_added = ?, loc_removed = ?, languages = ?, command_counts = ?,
+         human_turns = ?, agenticity = ?, longest_run = ?, parallel_batches = ?,
+         delegation_calls = ?, verified_edit_cycles = ?, red_green_cycles = ?, outcome = ?,
+         skills = ?, mcp_servers = ?, background_tasks = ? WHERE id = ?`,
     )
       .bind(
         stats.startedAt,
@@ -362,6 +368,21 @@ app.post('/api/passports/:id/sessions', async (c) => {
         proof,
         r2Key,
         projectHash,
+        stats.locAdded,
+        stats.locRemoved,
+        JSON.stringify(stats.languages),
+        JSON.stringify(stats.commandCounts),
+        stats.humanTurns,
+        stats.agenticity,
+        stats.longestRun,
+        stats.parallelBatches,
+        stats.delegationCalls,
+        stats.verifiedEditCycles,
+        stats.redGreenCycles,
+        stats.outcome,
+        JSON.stringify(stats.skills),
+        JSON.stringify(stats.mcpServers),
+        stats.backgroundTasks,
         existing.id,
       )
       .run()
@@ -371,8 +392,11 @@ app.post('/api/passports/:id/sessions', async (c) => {
     `INSERT INTO sessions
       (id, passport_id, harness, external_id, started_at, ended_at,
        message_count, tool_call_count, input_tokens, output_tokens,
-       models, tool_counts, created_at, verification, proof, r2_key, project_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       models, tool_counts, created_at, verification, proof, r2_key, project_hash,
+       loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
+       longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
+       red_green_cycles, outcome, skills, mcp_servers, background_tasks)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       crypto.randomUUID(),
@@ -392,6 +416,21 @@ app.post('/api/passports/:id/sessions', async (c) => {
       proof,
       r2Key,
       projectHash,
+      stats.locAdded,
+      stats.locRemoved,
+      JSON.stringify(stats.languages),
+      JSON.stringify(stats.commandCounts),
+      stats.humanTurns,
+      stats.agenticity,
+      stats.longestRun,
+      stats.parallelBatches,
+      stats.delegationCalls,
+      stats.verifiedEditCycles,
+      stats.redGreenCycles,
+      stats.outcome,
+      JSON.stringify(stats.skills),
+      JSON.stringify(stats.mcpServers),
+      stats.backgroundTasks,
     )
     .run()
   return c.json({ duplicate: false, session: stats, verification }, 201)
@@ -433,7 +472,10 @@ app.get('/api/passports/slug/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, proof, project_hash
+            input_tokens, output_tokens, models, tool_counts, verification, proof, project_hash,
+            loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
+            longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
+            red_green_cycles, outcome, skills, mcp_servers, background_tasks
      FROM sessions WHERE passport_id = ?`,
   )
     .bind(passport.id)
@@ -473,7 +515,10 @@ app.get('/og/:slug', async (c) => {
     if (!passport) return c.json({ error: 'not found' }, 404)
     const { results } = await c.env.DB.prepare(
       `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-              input_tokens, output_tokens, models, tool_counts, project_hash
+              input_tokens, output_tokens, models, tool_counts, project_hash,
+              loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
+              longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
+              red_green_cycles, outcome, skills, mcp_servers, background_tasks
        FROM sessions WHERE passport_id = ?`,
     )
       .bind(passport.id)
@@ -496,7 +541,10 @@ app.get('/p/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, project_hash
+            input_tokens, output_tokens, models, tool_counts, project_hash,
+            loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
+            longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
+            red_green_cycles, outcome, skills, mcp_servers, background_tasks
      FROM sessions WHERE passport_id = ?`,
   )
     .bind(passport.id)
