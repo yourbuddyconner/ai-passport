@@ -9,6 +9,21 @@ export interface SessionRow {
   models: string
   tool_counts: string
   project_hash?: string | null
+  loc_added: number
+  loc_removed: number
+  languages: string
+  command_counts: string
+  human_turns: number
+  agenticity: number
+  longest_run: number
+  parallel_batches: number
+  delegation_calls: number
+  verified_edit_cycles: number
+  red_green_cycles: number
+  outcome: string
+  skills: string
+  mcp_servers: string
+  background_tasks: number
 }
 
 export interface Achievement {
@@ -38,6 +53,22 @@ export interface CardData {
   score: number
   grade: string
   scoreBreakdown: Record<string, number>
+  locAdded: number
+  locRemoved: number
+  languages: Record<string, number>
+  commandMix: Array<{ category: string; count: number; share: number }>
+  testShare: number
+  outcomes: Record<string, number>
+  concludedSessions: number
+  agenticity: number
+  longestRun: number
+  delegationCalls: number
+  redGreenCycles: number
+  verifiedEditCycles: number
+  skills: string[]
+  mcpServers: string[]
+  backgroundTasks: number
+  maxConcurrentSessions: number
 }
 
 const GRADES: Array<[number, string]> = [
@@ -46,6 +77,36 @@ const GRADES: Array<[number, string]> = [
   [30, 'Practitioner'],
   [0, 'Novice'],
 ]
+
+/** Log-curve contribution: 0 at 10^floorLog, max at 10^ceilLog, clamped. */
+function logDim(value: number, max: number, floorLog: number, ceilLog: number): number {
+  if (value <= 0) return 0
+  const pts = (max * (Math.log10(value) - floorLog)) / (ceilLog - floorLog)
+  return Math.min(max, Math.max(0, pts))
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0
+  const s = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+function maxConcurrent(rows: SessionRow[]): number {
+  const events: Array<[number, number]> = []
+  for (const r of rows) {
+    if (!r.started_at || !r.ended_at) continue
+    events.push([Date.parse(r.started_at), 1], [Date.parse(r.ended_at), -1])
+  }
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]) // ends before starts at ties
+  let cur = 0
+  let peak = 0
+  for (const [, d] of events) {
+    cur += d
+    peak = Math.max(peak, cur)
+  }
+  return peak
+}
 
 export function aggregate(rows: SessionRow[]): CardData {
   const harnesses = new Set<string>()
@@ -59,6 +120,20 @@ export function aggregate(rows: SessionRow[]): CardData {
   let activeMs = 0
   let first: string | null = null
   let last: string | null = null
+
+  let totalLocAdded = 0
+  let totalLocRemoved = 0
+  const languageTotals: Record<string, number> = {}
+  const commandTotals: Record<string, number> = {}
+  const outcomes: Record<string, number> = {}
+  let totalDelegation = 0
+  let totalCycles = 0
+  let totalRedGreen = 0
+  let totalBackground = 0
+  let longestRun = 0
+  const agenticities: number[] = []
+  const allSkills = new Set<string>()
+  const allMcp = new Set<string>()
 
   for (const r of rows) {
     harnesses.add(r.harness)
@@ -82,22 +157,50 @@ export function aggregate(rows: SessionRow[]): CardData {
         activeMs += Math.max(0, Date.parse(r.ended_at) - Date.parse(r.started_at))
       }
     }
+
+    totalLocAdded += r.loc_added ?? 0
+    totalLocRemoved += r.loc_removed ?? 0
+    for (const [k, v] of Object.entries(JSON.parse(r.languages || '{}') as Record<string, number>)) {
+      languageTotals[k] = (languageTotals[k] ?? 0) + v
+    }
+    for (const [k, v] of Object.entries(JSON.parse(r.command_counts || '{}') as Record<string, number>)) {
+      commandTotals[k] = (commandTotals[k] ?? 0) + v
+    }
+    if (r.outcome) outcomes[r.outcome] = (outcomes[r.outcome] ?? 0) + 1
+    totalDelegation += r.delegation_calls ?? 0
+    totalCycles += r.verified_edit_cycles ?? 0
+    totalRedGreen += r.red_green_cycles ?? 0
+    totalBackground += r.background_tasks ?? 0
+    longestRun = Math.max(longestRun, r.longest_run ?? 0)
+    if ((r.agenticity ?? 0) > 0) agenticities.push(r.agenticity)
+    for (const sk of JSON.parse(r.skills || '[]') as string[]) allSkills.add(sk)
+    for (const sv of JSON.parse(r.mcp_servers || '[]') as string[]) allMcp.add(sv)
   }
 
   const derived = derive(rows)
   const distinctTools = Object.keys(toolTotals).length
-  // Transparent 0-100 score: capped log-ish contributions per dimension.
+  const concludedSessions = (outcomes.shipped ?? 0) + (outcomes.landed ?? 0)
+  // Transparent 0-100 score: log-curve contributions per dimension.
   const breakdown = {
-    volume: Math.min(25, rows.length * 2.5),
-    toolBreadth: Math.min(25, distinctTools * 2.5),
-    multiHarness: harnesses.size >= 2 ? 15 : 0,
-    output: Math.min(20, totalOutput / 50_000),
-    consistency: Math.min(15, days.size * 1.5),
+    volume: logDim(rows.length, 15, 0, 4),
+    codeShipped: logDim(totalLocAdded, 15, 2, 7),
+    concluded: logDim(concludedSessions + 1, 15, 0, 3),
+    output: logDim(totalOutput, 10, 5, 11),
+    verifiedCycles: logDim(totalCycles, 10, 0, 4),
+    delegation: logDim(totalDelegation, 10, 0, 3),
+    toolBreadth: Math.min(10, distinctTools),
+    consistency: logDim(days.size, 10, 0, 3),
+    multiHarness: harnesses.size >= 2 ? 5 : 0,
   }
   const score = Math.round(
     Object.values(breakdown).reduce((a, b) => a + b, 0),
   )
   const grade = GRADES.find(([min]) => score >= min)![1]
+
+  const totalCommands = Object.values(commandTotals).reduce((a, b) => a + b, 0)
+  const commandMix = Object.entries(commandTotals)
+    .map(([category, count]) => ({ category, count, share: totalCommands ? count / totalCommands : 0 }))
+    .sort((a, b) => b.count - a.count)
 
   return {
     totalSessions: rows.length,
@@ -120,8 +223,24 @@ export function aggregate(rows: SessionRow[]): CardData {
     score,
     grade,
     scoreBreakdown: Object.fromEntries(
-      Object.entries(breakdown).map(([k, v]) => [k, Math.round(v * 10) / 10]),
+      Object.entries(breakdown).map(([k, v]) => [k, Math.round(v * 100) / 100]),
     ),
+    locAdded: totalLocAdded,
+    locRemoved: totalLocRemoved,
+    languages: languageTotals,
+    commandMix,
+    testShare: totalCommands ? (commandTotals.test ?? 0) / totalCommands : 0,
+    outcomes,
+    concludedSessions,
+    agenticity: median(agenticities),
+    longestRun,
+    delegationCalls: totalDelegation,
+    redGreenCycles: totalRedGreen,
+    verifiedEditCycles: totalCycles,
+    skills: [...allSkills].sort(),
+    mcpServers: [...allMcp].sort(),
+    backgroundTasks: totalBackground,
+    maxConcurrentSessions: maxConcurrent(rows),
   }
 }
 

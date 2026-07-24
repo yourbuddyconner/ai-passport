@@ -295,12 +295,27 @@ describe('aggregate', () => {
       output_tokens: s.outputTokens,
       models: JSON.stringify(s.models),
       tool_counts: JSON.stringify(s.toolCounts),
+      loc_added: s.locAdded,
+      loc_removed: s.locRemoved,
+      languages: JSON.stringify(s.languages),
+      command_counts: JSON.stringify(s.commandCounts),
+      human_turns: s.humanTurns,
+      agenticity: s.agenticity,
+      longest_run: s.longestRun,
+      parallel_batches: s.parallelBatches,
+      delegation_calls: s.delegationCalls,
+      verified_edit_cycles: s.verifiedEditCycles,
+      red_green_cycles: s.redGreenCycles,
+      outcome: s.outcome,
+      skills: JSON.stringify(s.skills),
+      mcp_servers: JSON.stringify(s.mcpServers),
+      background_tasks: s.backgroundTasks,
     }))
     const card = aggregate(rows)
     expect(card.totalSessions).toBe(2)
     expect(card.harnesses.sort()).toEqual(['claude-code', 'codex'])
     expect(card.models).toContain('gpt-5.4')
-    expect(card.scoreBreakdown.multiHarness).toBe(15)
+    expect(card.scoreBreakdown.multiHarness).toBe(5)
     expect(card.score).toBeGreaterThan(0)
     expect(card.score).toBeLessThanOrEqual(100)
     expect(card.grade).toBeTruthy()
