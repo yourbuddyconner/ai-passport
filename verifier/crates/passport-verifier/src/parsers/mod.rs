@@ -6,10 +6,6 @@
 
 mod claude_code;
 mod codex;
-// Scaffolding for the Rust harness parsers landing in Task 9-11; nothing in
-// this crate calls it yet (only its own test suite does), so dead-code is
-// silenced here at the module boundary rather than per-item inside the module.
-#[allow(dead_code)]
 mod heuristics;
 
 use serde::Serialize;
@@ -46,6 +42,67 @@ pub struct SessionStats {
     /// Truncated SHA-256 of the session's working directory. Lets cards count
     /// distinct repositories without ever revealing a path.
     pub project_hash: Option<String>,
+    /// Lines added, excluding generated/vendored paths.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub loc_added: u64,
+    /// Lines removed, excluding generated/vendored paths.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub loc_removed: u64,
+    /// Normalized file extension -> lines changed (added + removed).
+    pub languages: BTreeMap<String, u64>,
+    /// Bash command category -> invocation count.
+    pub command_counts: BTreeMap<String, u64>,
+    /// Number of human prompts (user turns with real text content).
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub human_turns: u64,
+    /// Median tool-call run length between human turns.
+    ///
+    /// `qos_json::string_or_numeric` only supports integer types, and plain
+    /// `f64` serialization does not work here: the proof payload goes
+    /// through `qos_json::to_vec`, whose canonical JSON encoder rejects
+    /// *any* non-integer `serde_json::Number` (even whole values like
+    /// `0.0`), by design (`SPEC.md`: "QOS canonical JSON forbids
+    /// non-integer JSON numbers"). So this field is serialized as a decimal
+    /// string (e.g. `"4.5"`); the worker must `Number()`-parse it like the
+    /// other numeric-as-string fields above.
+    #[serde(serialize_with = "serialize_f64_as_string")]
+    pub agenticity: f64,
+    /// Longest tool-call run between human turns.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub longest_run: u64,
+    /// Number of requestIds that batched more than one tool call.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub parallel_batches: u64,
+    /// Number of Agent/Task/Workflow delegation tool calls.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub delegation_calls: u64,
+    /// Number of dirty-edit -> green-verify cycles.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub verified_edit_cycles: u64,
+    /// Number of failed-verify -> edit -> ... cycles.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub red_green_cycles: u64,
+    /// Overall session outcome classification.
+    pub outcome: String,
+    /// Distinct Skill names invoked, sorted.
+    pub skills: Vec<String>,
+    /// Distinct MCP server names invoked, sorted.
+    pub mcp_servers: Vec<String>,
+    /// Number of background-mode tool invocations.
+    #[serde(with = "qos_json::string_or_numeric")]
+    pub background_tasks: u64,
+}
+
+/// Serialize an `f64` as its decimal string form.
+///
+/// See the doc comment on [`SessionStats::agenticity`]: this is required
+/// because `qos_json`'s canonical JSON encoder rejects non-integer JSON
+/// numbers outright, so `agenticity` cannot travel as a bare JSON number.
+fn serialize_f64_as_string<S: serde::Serializer>(
+    value: &f64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&value.to_string())
 }
 
 /// Hash a working-directory path into a 16-hex-char project identifier.
