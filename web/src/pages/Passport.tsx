@@ -12,12 +12,21 @@ import {
   ShareNetwork,
   XLogo,
   WarningCircle,
+  Robot,
+  Timer,
+  UsersThree,
+  ArrowsClockwise,
+  Sparkle,
+  Stack,
+  CirclesFour,
 } from '@phosphor-icons/react'
 import { Button } from '@/components/ui/button'
 import { GradeSeal } from '@/components/GradeSeal'
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { mrz } from '@/lib/mrz'
 import { Endorsements } from '@/components/Endorsements'
+import { LanguageBar } from '@/components/LanguageBar'
+import { OutcomeBar } from '@/components/OutcomeBar'
 import { fetchPassport, type PassportView } from '@/lib/api'
 import { verifyProofSignature } from '@/lib/verify'
 import { useCountUp } from '@/lib/useCountUp'
@@ -103,6 +112,26 @@ export function Passport({ slug }: { slug: string }) {
   const { passport, card } = view
   const [mrz1, mrz2] = mrz(passport.name, passport.slug, card.score, card.grade)
   const maxTool = card.topTools[0]?.count ?? 1
+  const hasLanguages = Object.values(card.languages ?? {}).some((v) => v > 0)
+  const hasOutcomes = Object.values(card.outcomes ?? {}).some((v) => v > 0)
+  const showReuploadHint = card.concludedSessions === 0 && card.totalSessions > 0
+  const workingStyleEntries: Array<{
+    icon: typeof Cpu
+    label: string
+    value: number
+    format?: (n: number) => string
+  }> = [
+    { icon: Robot, label: 'tool calls / prompt', value: card.agenticity },
+    { icon: Timer, label: 'longest run', value: card.longestRun },
+    { icon: UsersThree, label: 'delegation calls', value: card.delegationCalls },
+    { icon: ArrowsClockwise, label: 'red→green cycles', value: card.redGreenCycles },
+    { icon: Sparkle, label: 'skills used', value: card.skills?.length ?? 0 },
+    { icon: Stack, label: 'background tasks', value: card.backgroundTasks },
+    { icon: CirclesFour, label: 'max concurrent sessions', value: card.maxConcurrentSessions },
+  ].filter((e) => e.value > 0)
+  const topCommandMix = [...(card.commandMix ?? [])]
+    .sort((a, b) => b.share - a.share)
+    .slice(0, 4)
   const dateFmt = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short' })
   const issued = card.firstActivity ? dateFmt.format(new Date(card.firstActivity)) : null
   const latest = card.lastActivity ? dateFmt.format(new Date(card.lastActivity)) : null
@@ -228,6 +257,65 @@ export function Passport({ slug }: { slug: string }) {
                     {t.count}
                   </span>
                 </div>
+              ))}
+            </div>
+            {(topCommandMix.length > 0 || card.testShare > 0) && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {topCommandMix
+                  .map((c) => `${c.category} ${Math.round(c.share * 100)}%`)
+                  .join(' · ')}
+                {topCommandMix.length > 0 && card.testShare > 0 ? ' · ' : ''}
+                {card.testShare > 0 ? `test share ${Math.round(card.testShare * 100)}%` : ''}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Code */}
+        {hasLanguages && (
+          <div className="px-7 pb-6">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              code
+            </p>
+            <LanguageBar languages={card.languages} />
+            <p className="mt-2 text-xs text-muted-foreground">
+              +{card.locAdded.toLocaleString()} / −{card.locRemoved.toLocaleString()} lines
+            </p>
+          </div>
+        )}
+
+        {/* Session outcomes */}
+        {(hasOutcomes || showReuploadHint) && (
+          <div className="px-7 pb-6">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              session outcomes
+            </p>
+            {hasOutcomes && (
+              <>
+                <OutcomeBar outcomes={card.outcomes} />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {card.concludedSessions} sessions shipped or landed · {card.verifiedEditCycles}{' '}
+                  verified edit cycles
+                </p>
+              </>
+            )}
+            {showReuploadHint && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                re-upload sessions to count shipped work
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Working style */}
+        {workingStyleEntries.length > 0 && (
+          <div className="px-7 pb-6">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
+              working style
+            </p>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {workingStyleEntries.map((e) => (
+                <Entry key={e.label} icon={e.icon} label={e.label} value={e.value} format={e.format} />
               ))}
             </div>
           </div>

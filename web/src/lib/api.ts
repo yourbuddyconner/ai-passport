@@ -33,6 +33,22 @@ export interface CardData {
   score: number
   grade: string
   scoreBreakdown: Record<string, number>
+  locAdded: number
+  locRemoved: number
+  languages: Record<string, number>
+  commandMix: Array<{ category: string; count: number; share: number }>
+  testShare: number
+  outcomes: Record<string, number>
+  concludedSessions: number
+  agenticity: number
+  longestRun: number
+  delegationCalls: number
+  redGreenCycles: number
+  verifiedEditCycles: number
+  skills: string[]
+  mcpServers: string[]
+  backgroundTasks: number
+  maxConcurrentSessions: number
 }
 
 export interface SessionProofView {
