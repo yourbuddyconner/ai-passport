@@ -44,7 +44,11 @@ longestRun: number                    // max consecutive tool calls between huma
 parallelBatches: number               // tool batches with 2+ parallel tool_use
 delegationCalls: number               // Agent/Task/Workflow tool calls
 verifiedEditCycles: number            // edit→(test|build) success sequences
+redGreenCycles: number                // failing verify → edit → passing verify
 outcome: string                       // terminal state, see Outcome taxonomy
+skills: string[]                      // distinct skill names invoked
+mcpServers: string[]                  // distinct MCP server names used
+backgroundTasks: number               // backgrounded Bash/Monitor calls
 ```
 
 ### Human-turn filtering (critical for agenticity)
@@ -70,6 +74,18 @@ typed. (Same rule the deep-analysis excerpt builder uses.)
 - **Delegation**: tool_use names `Agent`, `Task`, `Workflow`. (Sidechain
   transcripts live in separate files and are NOT counted — prototype
   confirmed `isSidechain` never appears in the main session file.)
+- **Skills**: union of `attributionSkill` line fields and `Skill` tool
+  `input.skill` values. **MCP servers**: union of `attributionMcpServer`
+  fields and the server segment of `mcp__<server>__<tool>` tool names.
+  (Storing names matches existing posture — `tool_counts` already holds MCP
+  tool names verbatim.)
+- **Background tasks**: Bash calls with `run_in_background`, plus Monitor
+  calls.
+- **Red→green cycle**: a test/build result with `is_error`, then ≥1 edit,
+  then a passing test/build → one cycle. Real data: 18 cycles across 9 of
+  36 sessions. (Plan-mode detection was prototyped and cut: plan entries
+  live in harness-version-dependent `mode` lines, 0 detectable via tool
+  calls — batch-two investigation.)
 - Sessions lacking any of these fields produce zeros, never parse errors.
 
 ### Extraction: Codex
@@ -212,6 +228,10 @@ New (same `tiered()` pattern; existing ones unchanged):
 - **Test Runner** — 100 test commands
 - **Full Auto** — a 100+ tool-call autonomous run (real-data max: 207)
 - **Shipper** — 25 concluded sessions (shipped + landed)
+- **Debugger** — 25 red→green cycles (break it, fix it, prove it)
+- **Skillful** — 10 distinct skills invoked (real data: 18 across 36 sessions)
+- **Multitasker** — 3 sessions running concurrently (from existing
+  timestamps at aggregate time; no new session fields — real-data max: 4)
 
 (Refactorer — LOC removed — was cut: trivially gameable, zero consumer
 signal.)
@@ -226,7 +246,8 @@ signal.)
   verified-cycle count called out. Counts, not just percentages — the
   denominator stays visible (curation guard).
 - **Working style row**: agenticity ("median N tool calls per prompt"),
-  longest autonomous run, delegation count.
+  longest autonomous run, delegation count, red→green cycles, skills used,
+  background tasks, max concurrent sessions.
 - **Command mix**: percentages, not raw counts, with **test share** called
   out as a named stat ("test commands: 7% of shell use").
 - **Lines shipped**: secondary stat (+added / −removed) under the language
@@ -251,7 +272,11 @@ ALTER TABLE sessions ADD COLUMN longest_run INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN parallel_batches INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN delegation_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN verified_edit_cycles INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN red_green_cycles INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE sessions ADD COLUMN mcp_servers TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE sessions ADD COLUMN background_tasks INTEGER NOT NULL DEFAULT 0;
 ```
 
 ## Privacy
@@ -273,7 +298,11 @@ emitted, signed, and stored.
   edit→commit, no verify (committed), edit→push (shipped), edit→green
   without commit (green), edit→failing verify last (red), edit only
   (unverified), reads only (research/trivial by tool-call count), and
-  green-before-any-edit (not a cycle, not green).
+  green-before-any-edit (not a cycle, not green). Red→green tests:
+  fail→edit→pass (one cycle), fail→pass without edit (no cycle),
+  fail→edit→fail→edit→pass (one cycle). Skills/MCP fixtures cover both
+  attribution fields and tool-name derivation; concurrency is a pure
+  `score.ts` aggregate test over overlapping timestamp windows.
 - **Rust (enclave)**: same fixture content, asserting numbers identical to
   the TS tests — parity is the requirement.
 - **Score**: log-curve edge cases (zero, at-floor, above-ceiling) per
