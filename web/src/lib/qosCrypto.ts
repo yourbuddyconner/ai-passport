@@ -38,14 +38,28 @@ function concat(...parts: Uint8Array[]): Uint8Array {
   return out
 }
 
+/** Chunked base64 — String.fromCharCode has an argument-count limit. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
+}
+
+export async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
 /**
  * Encrypt `message` to a qos_p256 dual public key (130 bytes hex).
- * Returns the hex-encoded borsh envelope that `P256Pair::decrypt` accepts.
+ * Returns the raw borsh envelope bytes that `P256Pair::decrypt` accepts.
  */
-export async function encryptToQuorumKey(
+export async function encryptToQuorumKeyRaw(
   dualPublicKeyHex: string,
   message: Uint8Array,
-): Promise<string> {
+): Promise<Uint8Array> {
   const dual = hexToBytes(dualPublicKeyHex)
   if (dual.length !== 130) throw new Error(`expected 130-byte dual public key, got ${dual.length}`)
   const receiverPub = dual.slice(0, 65)
@@ -112,5 +126,16 @@ export async function encryptToQuorumKey(
   // borsh: fixed-size arrays are raw bytes; Vec<u8> is u32 LE length prefix.
   const lenLe = new Uint8Array(4)
   new DataView(lenLe.buffer).setUint32(0, ciphertext.length, true)
-  return bytesToHex(concat(nonce, ephemeralPub, lenLe, ciphertext))
+  return concat(nonce, ephemeralPub, lenLe, ciphertext)
+}
+
+/**
+ * Encrypt `message` to a qos_p256 dual public key (130 bytes hex).
+ * Returns the hex-encoded borsh envelope that `P256Pair::decrypt` accepts.
+ */
+export async function encryptToQuorumKey(
+  dualPublicKeyHex: string,
+  message: Uint8Array,
+): Promise<string> {
+  return bytesToHex(await encryptToQuorumKeyRaw(dualPublicKeyHex, message))
 }

@@ -1,4 +1,7 @@
-import { encryptToQuorumKey } from './qosCrypto'
+import { bytesToBase64, encryptToQuorumKeyRaw, gzipBytes } from './qosCrypto'
+
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+const MAX_CIPHERTEXT_B64_LENGTH = 90 * 1024 * 1024
 
 export interface PassportCredentials {
   id: string
@@ -132,6 +135,9 @@ export async function uploadTrace(
   creds: PassportCredentials,
   file: File,
 ): Promise<UploadResult> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
+  }
   const text = await file.text()
 
   // End-to-end encryption: seal {passport_id, trace} to the enclave's quorum
@@ -141,11 +147,20 @@ export async function uploadTrace(
   let res: Response
   if (quorumKey) {
     const envelope = JSON.stringify({ passport_id: creds.id, trace: text })
-    const ciphertext = await encryptToQuorumKey(quorumKey, new TextEncoder().encode(envelope))
+    const compressed = await gzipBytes(new TextEncoder().encode(envelope))
+    const ciphertext = await encryptToQuorumKeyRaw(quorumKey, compressed)
+    const ciphertextB64 = bytesToBase64(ciphertext)
+    if (ciphertextB64.length > MAX_CIPHERTEXT_B64_LENGTH) {
+      return {
+        fileName: file.name,
+        ok: false,
+        error: 'trace too large even after compression — split the session',
+      }
+    }
     res = await fetch(`/api/passports/${creds.id}/sessions`, {
       method: 'POST',
       headers: { 'x-edit-token': creds.editToken, 'content-type': 'application/json' },
-      body: JSON.stringify({ ciphertext }),
+      body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
     res = await fetch(`/api/passports/${creds.id}/sessions`, {
@@ -225,16 +240,28 @@ export async function submitOnboarding(displayName: string, title: string): Prom
 
 /** Upload for a passkey-authenticated owner (session cookie, no edit token). */
 export async function uploadTraceAsOwner(passportId: string, file: File): Promise<UploadResult> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
+  }
   const text = await file.text()
   const quorumKey = await getQuorumKey()
   let res: Response
   if (quorumKey) {
     const envelope = JSON.stringify({ passport_id: passportId, trace: text })
-    const ciphertext = await encryptToQuorumKey(quorumKey, new TextEncoder().encode(envelope))
+    const compressed = await gzipBytes(new TextEncoder().encode(envelope))
+    const ciphertext = await encryptToQuorumKeyRaw(quorumKey, compressed)
+    const ciphertextB64 = bytesToBase64(ciphertext)
+    if (ciphertextB64.length > MAX_CIPHERTEXT_B64_LENGTH) {
+      return {
+        fileName: file.name,
+        ok: false,
+        error: 'trace too large even after compression — split the session',
+      }
+    }
     res = await fetch(`/api/passports/${passportId}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ciphertext }),
+      body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
     res = await fetch(`/api/passports/${passportId}/sessions`, {
