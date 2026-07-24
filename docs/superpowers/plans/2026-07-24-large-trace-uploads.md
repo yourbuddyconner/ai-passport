@@ -56,17 +56,22 @@ export async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
 
 ---
 
-### Task 2: Worker — accept ciphertextB64, transcode for enclave, body-size errors
+### Task 2: Worker — accept ciphertextB64 and PASS IT THROUGH (no transcode)
+
+**Rationale (amended):** production is already throwing "worker exceeded resource
+limits" on large Codex traces — the Worker must never materialize a hex copy of
+a large ciphertext. The worker treats base64 ciphertext as an opaque string and
+forwards it verbatim; the v0.4.1 enclave accepts base64 natively (Task 3).
 
 **Files:**
-- Modify: `worker/src/index.ts` (sessions POST: accept `{ciphertext}` hex OR `{ciphertextB64}`; clear 413 for oversized bodies)
-- Modify: `worker/src/qosCrypto.ts` or `worker/src/verifier.ts` (base64→hex transcode helper)
-- Test: `worker/test/verifier.test.ts` (transcode round-trip; both wire fields accepted)
+- Modify: `worker/src/index.ts` (sessions POST: accept `{ciphertext}` hex OR `{ciphertextB64}`)
+- Modify: `worker/src/verifier.ts` (analyze functions carry either encoding to the enclave: request body `{ciphertext}` for hex, `{ciphertext_b64}` for base64 — no conversion in the worker)
+- Test: `worker/test/verifier.test.ts` (both wire fields produce the right enclave request body; neither-field still 400s)
 
 **Steps:**
-- [ ] TDD: test that a `{ciphertextB64: btoa-of-bytes}` body reaches the enclave client as the same hex a `{ciphertext}` body would.
-- [ ] Implement: in the ciphertext branch, `const hex = body.ciphertext ?? (body.ciphertextB64 ? base64ToHex(body.ciphertextB64) : null)`. `base64ToHex` decodes with `atob` in 32 KB chunks into `Uint8Array` then hex-encodes with the existing helper. Reject neither-field with the existing 400.
-- [ ] Verify: `cd worker && npx vitest run && npx tsc --noEmit`. Commit: `feat(worker): accept base64 ciphertext envelopes`
+- [ ] TDD: mock the enclave fetch; assert `{ciphertextB64: X}` client body → enclave request `{ciphertext_b64: X}` verbatim, and `{ciphertext: Y}` → `{ciphertext: Y}` unchanged.
+- [ ] Implement the pass-through. Legacy R2/storage fields that persist the ciphertext store whichever encoding arrived (check how `r2_key`/ciphertext storage works and keep it encoding-agnostic — read before assuming).
+- [ ] Verify: `cd worker && npx vitest run && npx tsc --noEmit`. Commit: `feat(worker): pass-through base64 ciphertext envelopes (no hex materialization)`
 
 ---
 
@@ -74,7 +79,7 @@ export async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
 
 **Files:**
 - Modify: `verifier/Cargo.toml` (workspace version 0.4.1), `verifier/crates/passport-verifier/Cargo.toml` (`flate2 = "1"`)
-- Modify: `verifier/crates/passport-verifier/src/handlers/analyze.rs` (after decrypt: if plaintext starts `1f 8b`, inflate with a decompressed-size cap of 512 MB before serde parse; else parse as today)
+- Modify: `verifier/crates/passport-verifier/src/handlers/analyze.rs` (request accepts `ciphertext` hex OR `ciphertext_b64` base64 — add base64 decode via the `base64` crate or a hand-rolled decoder consistent with lint gates; after decrypt: if plaintext starts `1f 8b`, inflate with a decompressed-size cap of 512 MB before serde parse; else parse as today)
 - Modify: `verifier/crates/passport-verifier/src/parsers/mod.rs` (`parse_trace`: stop collecting `Vec<Value>`; detect harness from the first 10 parseable lines, then hand each parser a fresh line iterator)
 - Modify: `verifier/crates/passport-verifier/src/parsers/claude_code.rs`, `codex.rs` (accept `impl Iterator<Item = Value>` instead of `&[Value]`; bodies are already single-pass loops)
 
