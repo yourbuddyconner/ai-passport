@@ -66,7 +66,7 @@ function parseApplyPatch(body: string): Array<{ path: string; added: number; rem
   return files
 }
 
-export function parseCodex(lines: unknown[]): SessionStats {
+export function parseCodex(lines: Iterable<unknown>): SessionStats {
   const stats: SessionStats = {
     harness: 'codex',
     externalId: '',

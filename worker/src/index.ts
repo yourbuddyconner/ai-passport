@@ -33,7 +33,11 @@ type Env = {
   VERIFIER_ATTESTED?: string
 }
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+// Matches the client's 90 MB base64 ciphertext ceiling (web/src/lib/api.ts)
+// with a little headroom; applies to both the ciphertext-envelope path and
+// the plaintext fallback (the fallback parser now streams, so it no longer
+// needs a smaller cap of its own).
+const MAX_UPLOAD_BYTES = 95 * 1024 * 1024
 
 /** Match the enclave's project hash: truncated SHA-256 of the cwd. */
 async function hashCwd(cwd: string): Promise<string> {
@@ -269,7 +273,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
     return c.json({ error: 'not authorized for this passport' }, 403)
 
   const len = Number(c.req.header('content-length') ?? 0)
-  if (len > MAX_UPLOAD_BYTES * 3) return c.json({ error: 'file too large (max 25 MB)' }, 413)
+  if (len > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 95 MB)' }, 413)
   const text = await c.req.text()
 
   let stats: SessionStats | null = null
@@ -317,7 +321,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
     // Plaintext path: prefer the enclave (Worker-side encryption); fall back
     // to in-Worker parsing so the app keeps working when no verifier is
     // configured or reachable.
-    if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
+    if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 95 MB)' }, 413)
     if (c.env.VERIFIER_URL) {
       try {
         const result = await analyzeViaEnclave(c.env.VERIFIER_URL, id, text)

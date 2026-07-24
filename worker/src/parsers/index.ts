@@ -5,22 +5,40 @@ import { looksLikeCodex, parseCodex } from './codex'
 export { ParseError } from './types'
 export type { SessionStats, Harness } from './types'
 
-/** Parse a raw JSONL trace, auto-detecting the harness. */
-export function parseTrace(text: string): SessionStats {
-  const lines: unknown[] = []
+/**
+ * Parse each line of `text` as a JSON value, tolerating the odd corrupt or
+ * blank line (they're simply skipped rather than aborting the whole trace).
+ */
+function* parsedLines(text: string): Generator<unknown> {
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      lines.push(JSON.parse(trimmed))
+      yield JSON.parse(trimmed)
     } catch {
       // tolerate the odd corrupt line
     }
   }
-  if (lines.length === 0) throw new ParseError('File is not valid JSONL')
+}
 
-  const head = lines.slice(0, 10)
-  if (looksLikeClaudeCode(head)) return parseClaudeCode(lines)
-  if (looksLikeCodex(head)) return parseCodex(lines)
+/**
+ * Parse a raw JSONL trace, auto-detecting the harness.
+ *
+ * Streams the trace at most twice: once (truncated to 10 lines) to sniff
+ * which harness produced it, and once more, in full, through that harness's
+ * parser. Neither pass collects the whole trace into memory — traces can be
+ * tens of megabytes of JSONL, and an array of every line multiplies that
+ * several times over.
+ */
+export function parseTrace(text: string): SessionStats {
+  const head: unknown[] = []
+  for (const line of parsedLines(text)) {
+    head.push(line)
+    if (head.length >= 10) break
+  }
+  if (head.length === 0) throw new ParseError('File is not valid JSONL')
+
+  if (looksLikeClaudeCode(head)) return parseClaudeCode(parsedLines(text))
+  if (looksLikeCodex(head)) return parseCodex(parsedLines(text))
   throw new ParseError('Unrecognized trace format (expected Claude Code or Codex JSONL)')
 }

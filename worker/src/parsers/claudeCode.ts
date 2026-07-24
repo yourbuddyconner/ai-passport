@@ -62,7 +62,7 @@ function isHumanPrompt(o: ClaudeLine): boolean {
   return false
 }
 
-export function parseClaudeCode(lines: unknown[]): SessionStats {
+export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
   const stats: SessionStats = {
     harness: 'claude-code',
     externalId: '',
