@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { parseTrace, ParseError } from '../src/parsers'
 import { parseClaudeCode } from '../src/parsers/claudeCode'
+import { parseCodex } from '../src/parsers/codex'
 import { aggregate } from '../src/score'
 
 const claudeTrace = [
@@ -227,6 +228,56 @@ describe('claude code v2 metrics', () => {
     expect(s.skills).toEqual([])
     expect(s.mcpServers).toEqual([])
     expect(s.locAdded).toBe(2)
+  })
+})
+
+describe('codex v2 metrics', () => {
+  const PATCH = [
+    '*** Begin Patch',
+    '*** Update File: /repo/src/main.py',
+    '@@',
+    ' context',
+    '+added line one',
+    '+added line two',
+    '-removed line',
+    '*** End Patch',
+  ].join('\n')
+  const lines = [
+    { type: 'session_meta', timestamp: '2026-07-01T09:00:00Z', payload: { id: 'c1', cwd: '/repo' } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'fix the bug' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'x1',
+        arguments: JSON.stringify({ cmd: 'pytest -x' }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'x1',
+        output: 'Process exited with code 1\nFAILED' } },
+    { type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'x2',
+        input: PATCH } },
+    { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'x2',
+        output: '{"output":"Success","metadata":{"exit_code":0}}' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'x3',
+        arguments: JSON.stringify({ cmd: 'pytest -x' }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'x3',
+        output: 'Process exited with code 0\n2 passed' } },
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'x4',
+        arguments: JSON.stringify({ cmd: 'git add -A && git commit -m fix' }) } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'x4',
+        output: 'Process exited with code 0' } },
+    { type: 'response_item', payload: { type: 'message', content: [{ type: 'output_text', text: 'done' }] } },
+  ]
+
+  it('extracts v2 metrics', () => {
+    const s = parseCodex(lines)
+    expect(s.locAdded).toBe(2)
+    expect(s.locRemoved).toBe(1)
+    expect(s.languages).toEqual({ py: 3 })
+    expect(s.commandCounts).toEqual({ test: 2, git: 1 })
+    expect(s.humanTurns).toBe(1)
+    expect(s.verifiedEditCycles).toBe(1)
+    expect(s.redGreenCycles).toBe(1)
+    expect(s.outcome).toBe('landed')  // commit after last edit, green after first edit
+    expect(s.agenticity).toBe(4)      // one run of 4 calls
+    expect(s.longestRun).toBe(4)
+    expect(s.delegationCalls).toBe(0)
+    expect(s.skills).toEqual([])
   })
 })
 
