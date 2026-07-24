@@ -278,7 +278,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
   } else {
     if (len > MAX_PLAINTEXT_BODY_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
   }
-  const text = await c.req.text()
+  let text = await c.req.text()
 
   let stats: SessionStats | null = null
   let verification: 'enclave' | 'format' = 'format'
@@ -301,6 +301,9 @@ app.post('/api/passports/:id/sessions', async (c) => {
     } catch {
       return c.json({ error: 'request body is not valid JSON' }, 400)
     }
+    // release the raw body copy — a 30MB string is a quarter of Worker memory
+    text = ''
+
     // Legacy hex envelope or the (gzip+)base64 envelope from Task 1 — either
     // is carried opaquely to the enclave, never transcoded here (transcoding
     // a large base64 ciphertext to hex in the Worker is what triggered

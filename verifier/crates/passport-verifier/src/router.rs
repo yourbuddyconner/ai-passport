@@ -25,8 +25,7 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/random_app_proof", get(random_app_proof))
         .route("/quorum_key/encrypt", post(quorum_key_encrypt))
         .route("/quorum_key/decrypt", post(quorum_key_decrypt))
-        // Traces are up to 25 MB and arrive hex-encoded inside a JSON envelope,
-        // which roughly doubles their size; axum's 2 MB default is far too low.
+        // 64 MB body limit: plaintext-path traces arrive hex-encoded (2x of the 25 MB cap); browser uploads arrive as base64 ciphertext (≤30 MB client-capped). Both fit with headroom.
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
