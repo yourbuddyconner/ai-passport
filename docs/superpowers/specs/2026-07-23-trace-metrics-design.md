@@ -44,7 +44,7 @@ longestRun: number                    // max consecutive tool calls between huma
 parallelBatches: number               // tool batches with 2+ parallel tool_use
 delegationCalls: number               // Agent/Task/Workflow tool calls
 verifiedEditCycles: number            // edit→(test|build) success sequences
-landed: boolean                       // session ended with tested, committed work
+outcome: string                       // terminal state, see Outcome taxonomy
 ```
 
 ### Human-turn filtering (critical for agenticity)
@@ -122,17 +122,42 @@ Naive first-token matching classified 59% of real commands as `other`
 Precedence means `cd worker && npx vitest run` → `test`, and
 `pnpm install` → `package` while `pnpm test` → `test`.
 
-### Outcome definitions (calibrated)
+### Verified-edit cycles (calibrated)
 
-- **Verified-edit cycle**: an edit occurs (dirty flag set), then a `test` or
-  `build` command succeeds (`is_error` false) → one cycle, flag clears.
-  Real data: median 2/session, p75 12.
-- **Landed session**: `edits > 0` AND a successful `git commit` occurs after
-  the last edit AND at least one successful test/build occurred after editing
-  began. Commit detection: successful git command matching `\bcommit\b`.
-  Calibration: strict ordering (commit>green>last edit) matched only 2/29
-  real edit-sessions; any-commit matched 23/29; this definition matched
-  15/29 (~52%) — discriminating and accurate.
+An edit occurs (dirty flag set), then a `test` or `build` command succeeds
+(`is_error` false) → one cycle, flag clears. Real data: median 2/session,
+p75 12.
+
+### Outcome taxonomy (calibrated)
+
+Every session gets exactly one terminal state. Detection events (main chain
+only, successful commands only unless noted): **edit** (Write/Edit/apply_patch
+with content), **verify** (test/build command, success or failure recorded),
+**commit** (`git … commit`), **ship** (`git push`, `gh pr create`,
+`wrangler deploy|publish`, `flyctl deploy`). Precedence, first match wins:
+
+| Outcome | Definition |
+|---|---|
+| `shipped` | edits > 0, successful ship event after the last edit |
+| `landed` | edits > 0, commit after last edit, ≥1 green verify after editing began |
+| `committed` | edits > 0, commit after last edit, no verify ever ran (docs/spec sessions) |
+| `green` | edits > 0, last post-edit verify succeeded, never committed |
+| `red` | edits > 0, last post-edit verify failed |
+| `unverified` | edits > 0, none of the above |
+| `research` | no edits, ≥10 tool calls — a legitimate terminal state, not a failure |
+| `trivial` | no edits, <10 tool calls |
+
+Calibration over 36 real sessions: shipped 13, landed 4, green 1,
+unverified 11, research 2, trivial 5, committed 0, red 0. A plain
+landed-boolean misclassified the 13 shipped sessions — push/deploy, not
+commit, is the dominant real-world terminal state. `committed` and `red`
+were empty for this user but are logically reachable (docs-only work;
+sessions ending broken).
+
+**Concluded sessions** = `shipped + landed` — the count consumed by score
+and achievements. `green` is deliberately excluded from scoring: commits
+often happen outside the harness, so green is honest display credit, but
+scoring it would reward never committing.
 
 ## Gaming resistance
 
@@ -144,8 +169,8 @@ display-only with their denominator visible ("41 of 56 sessions landed").
 
 Agenticity is a *style* axis, not a virtue axis (high = autonomous, low can
 be expert precision-steering) — display-only, never scored. Delegation,
-landed sessions, and verified cycles are scored: they require actually doing
-the work to inflate.
+concluded sessions, and verified cycles are scored: they require actually
+doing the work to inflate.
 
 Honest floor (documented on /about): a determined user can forge an entire
 JSONL trace. Format verification catches sloppiness, not determination; these
@@ -161,7 +186,7 @@ No dimension maxes out in week one; log curves sized for years. All clamp to
 |---|---|---|---|
 | volume | 15 | `15 × log10(sessions) / 4` | 1 → 10,000 sessions |
 | codeShipped | 15 | `15 × (log10(locAdded) − 2) / 5` | 100 → 10M lines |
-| landed | 15 | `15 × log10(landedSessions + 1) / 3` | 0 → 1,000 landed |
+| concluded | 15 | `15 × log10(shipped + landed + 1) / 3` | 0 → 1,000 concluded |
 | output | 10 | `10 × (log10(outputTokens) − 5) / 6` | 100k → 100B tokens |
 | verifiedCycles | 10 | `10 × log10(cycles) / 4` | 1 → 10,000 cycles |
 | delegation | 10 | `10 × log10(delegationCalls) / 3` | 1 → 1,000 calls |
@@ -170,12 +195,12 @@ No dimension maxes out in week one; log curves sized for years. All clamp to
 | multiHarness | 5 | binary: 2+ harnesses | — |
 
 Grade thresholds unchanged (AI-Native 80 / Power User 55 / Practitioner 30).
-Sanity check against the prototype data (33 sessions, 79k LOC, 15 landed,
-347 cycles, 858 delegation calls, 2 harnesses): ≈60 → Power User. AI-Native
-requires years of heavy, verified use.
+Sanity check against the prototype data (33 sessions, 79k LOC, 17 concluded
+[13 shipped + 4 landed], 347 cycles, 858 delegation calls, 2 harnesses):
+≈60 → Power User. AI-Native requires years of heavy, verified use.
 
 When behavior dimensions are 0 but sessions exist, the card hints:
-"re-upload sessions to count landed work."
+"re-upload sessions to count shipped work."
 
 ## Achievements
 
@@ -186,7 +211,7 @@ New (same `tiered()` pattern; existing ones unchanged):
 - **Git Native** — 250 git commands
 - **Test Runner** — 100 test commands
 - **Full Auto** — a 100+ tool-call autonomous run (real-data max: 207)
-- **Lander** — 25 landed sessions
+- **Shipper** — 25 concluded sessions (shipped + landed)
 
 (Refactorer — LOC removed — was cut: trivially gameable, zero consumer
 signal.)
@@ -195,8 +220,11 @@ signal.)
 
 - **Language bar**: one horizontal stacked bar, top 5 + "other", display
   names in the web layer.
-- **Landed work** (headline of the new stats): "N sessions landed — tested &
-  committed", with verified-cycle count alongside.
+- **Session outcomes** (headline of the new stats): a compact stacked bar of
+  outcome counts (shipped / landed / green / committed / research vs
+  unverified / red / trivial), with "N sessions shipped or landed" and the
+  verified-cycle count called out. Counts, not just percentages — the
+  denominator stays visible (curation guard).
 - **Working style row**: agenticity ("median N tool calls per prompt"),
   longest autonomous run, delegation count.
 - **Command mix**: percentages, not raw counts, with **test share** called
@@ -223,7 +251,7 @@ ALTER TABLE sessions ADD COLUMN longest_run INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN parallel_batches INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN delegation_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN verified_edit_cycles INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN landed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
 ```
 
 ## Privacy
@@ -241,8 +269,11 @@ emitted, signed, and stored.
   trace with apply_patch + exec_command; assert exact values for every new
   field. Taxonomy tests must cover `cd X && npx vitest run` → test,
   `pnpm install` → package, `pnpm test` → test, `VAR=1 make` → build.
-  Landed/cycle tests cover: edit→green→commit (landed), edit→commit without
-  green (not landed), green before any edit (not a cycle).
+  Outcome tests cover every enum value: edit→green→commit (landed),
+  edit→commit, no verify (committed), edit→push (shipped), edit→green
+  without commit (green), edit→failing verify last (red), edit only
+  (unverified), reads only (research/trivial by tool-call count), and
+  green-before-any-edit (not a cycle, not green).
 - **Rust (enclave)**: same fixture content, asserting numbers identical to
   the TS tests — parity is the requirement.
 - **Score**: log-curve edge cases (zero, at-floor, above-ceiling) per
