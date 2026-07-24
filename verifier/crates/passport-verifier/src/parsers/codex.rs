@@ -84,7 +84,7 @@ fn parse_apply_patch(body: &str) -> Vec<PatchFile> {
     files
 }
 
-pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
+pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, ParseError> {
     let mut external_id = String::new();
     let mut cwd: Option<String> = None;
     let mut started_at: Option<String> = None;
@@ -110,7 +110,7 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
     let mut failed = false;
     let mut edited_since_fail = false;
 
-    for (idx, o) in lines.iter().enumerate() {
+    for (idx, o) in lines.enumerate() {
         let seq = idx + 1;
         let line_type = o.get("type").and_then(Value::as_str);
         let payload = o.get("payload");
@@ -322,7 +322,7 @@ mod tests {
     use serde_json::json;
 
     fn parse_lines(lines: Vec<Value>) -> SessionStats {
-        parse(&lines).expect("parse should succeed")
+        parse(lines.into_iter()).expect("parse should succeed")
     }
 
     #[test]

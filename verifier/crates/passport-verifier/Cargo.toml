@@ -6,8 +6,10 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 axum = { workspace = true, features = ["http1", "tokio", "json", "macros", "query"] }
+flate2 = "1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -9,9 +9,19 @@
 
 use crate::{parsers, response::AppError, state::AppState};
 use axum::{Json, extract::State};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// gzip magic bytes: envelopes compressed by newer clients start with these.
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+
+/// Hard cap on decompressed envelope size. A zip bomb (or a corrupt/hostile
+/// stream) must fail cleanly with a 422, never exhaust enclave memory.
+const GZIP_DECOMPRESSED_CAP: u64 = 512 * 1024 * 1024;
 
 /// Decrypted request envelope. Produced client-side, encrypted to the quorum key.
 #[derive(Deserialize)]
@@ -25,8 +35,53 @@ struct AnalyzeEnvelope {
 
 #[derive(Deserialize)]
 pub(crate) struct AnalyzeRequest {
-    /// Hex-encoded ciphertext of an [`AnalyzeEnvelope`], encrypted to the quorum key.
-    ciphertext: String,
+    /// Hex-encoded ciphertext of an [`AnalyzeEnvelope`], encrypted to the
+    /// quorum key. Legacy field; exactly one of this or `ciphertext_b64`
+    /// must be present.
+    ciphertext: Option<String>,
+    /// Base64-encoded ciphertext of an [`AnalyzeEnvelope`], encrypted to the
+    /// quorum key. Preferred over `ciphertext` (hex): ~33% smaller on the
+    /// wire for large traces.
+    ciphertext_b64: Option<String>,
+}
+
+/// Decode the request's ciphertext field, whichever of the two encodings is present.
+fn decode_ciphertext(request: &AnalyzeRequest) -> Result<Vec<u8>, AppError> {
+    match (&request.ciphertext, &request.ciphertext_b64) {
+        (Some(hex), None) => qos_hex::decode(hex)
+            .map_err(|e| AppError::bad_request(format!("invalid ciphertext hex: {e:?}"))),
+        (None, Some(b64)) => BASE64
+            .decode(b64)
+            .map_err(|e| AppError::bad_request(format!("invalid ciphertext base64: {e}"))),
+        (Some(_), Some(_)) => Err(AppError::bad_request(
+            "exactly one of ciphertext or ciphertext_b64 must be present",
+        )),
+        (None, None) => Err(AppError::bad_request(
+            "one of ciphertext or ciphertext_b64 is required",
+        )),
+    }
+}
+
+/// If `plaintext` is gzip-compressed (client-side envelope compression for
+/// large traces), inflate it under a hard size cap; otherwise return it
+/// unchanged. A stream that inflates past the cap is rejected outright
+/// rather than silently truncated, since a truncated envelope would just
+/// fail JSON parsing downstream with a confusing error.
+fn maybe_inflate(plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
+    if plaintext.len() < 2 || plaintext[..2] != GZIP_MAGIC {
+        return Ok(plaintext);
+    }
+    let mut decoder = GzDecoder::new(plaintext.as_slice()).take(GZIP_DECOMPRESSED_CAP + 1);
+    let mut inflated = Vec::new();
+    decoder
+        .read_to_end(&mut inflated)
+        .map_err(|e| AppError::unprocessable(format!("failed to inflate gzip envelope: {e}")))?;
+    if inflated.len() as u64 > GZIP_DECOMPRESSED_CAP {
+        return Err(AppError::unprocessable(
+            "gzip envelope exceeds decompressed size cap",
+        ));
+    }
+    Ok(inflated)
 }
 
 /// The exact payload that gets canonically serialized and signed.
@@ -77,12 +132,12 @@ pub(crate) async fn analyze(
     State(state): State<AppState>,
     Json(request): Json<AnalyzeRequest>,
 ) -> Result<Json<AnalyzeResponse>, AppError> {
-    let ciphertext = qos_hex::decode(&request.ciphertext)
-        .map_err(|e| AppError::bad_request(format!("invalid ciphertext hex: {e:?}")))?;
+    let ciphertext = decode_ciphertext(&request)?;
     let plaintext = state
         .quorum_key
         .decrypt(&ciphertext)
         .map_err(|e| AppError::bad_request(format!("failed to decrypt ciphertext: {e:?}")))?;
+    let plaintext = maybe_inflate(plaintext.to_vec())?;
     let envelope: AnalyzeEnvelope = serde_json::from_slice(&plaintext)
         .map_err(|e| AppError::bad_request(format!("invalid envelope JSON: {e}")))?;
 
@@ -123,4 +178,94 @@ pub(crate) async fn analyze(
             signature,
         },
     }))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn maybe_inflate_passes_plain_json_through_unchanged() {
+        let plain = br#"{"passport_id":"p","trace":"line\n"}"#.to_vec();
+        assert_eq!(maybe_inflate(plain.clone()).unwrap(), plain);
+    }
+
+    #[test]
+    fn maybe_inflate_inflates_gzipped_envelope() {
+        let plain = br#"{"passport_id":"p","trace":"line\n"}"#.to_vec();
+        let gzipped = gzip(&plain);
+        assert_eq!(maybe_inflate(gzipped).unwrap(), plain);
+    }
+
+    #[test]
+    fn maybe_inflate_rejects_stream_past_cap() {
+        // Highly compressible input that inflates past the 512MB cap; keep
+        // the compressed (and in-memory decompressed) size small by using a
+        // gzip stream that lies about its own length being tiny while
+        // actually decompressing to far more than the cap. We approximate
+        // this deterministically by writing repeated zero chunks well past
+        // the cap through the encoder, which stays cheap to build because
+        // all-zero input compresses to almost nothing.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let chunk = vec![0u8; 1024 * 1024];
+        let cap_chunks = (GZIP_DECOMPRESSED_CAP / chunk.len() as u64) + 8;
+        for _ in 0..cap_chunks {
+            encoder.write_all(&chunk).unwrap();
+        }
+        let gzipped = encoder.finish().unwrap();
+
+        let err = maybe_inflate(gzipped).expect_err("stream past cap must error, not succeed");
+        // AppError doesn't expose its status/message publicly outside the
+        // crate's response module; converting to a response and checking the
+        // status code is the black-box way to assert it's a 422.
+        use axum::response::IntoResponse;
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn decode_ciphertext_requires_exactly_one_field() {
+        let neither = AnalyzeRequest {
+            ciphertext: None,
+            ciphertext_b64: None,
+        };
+        assert!(decode_ciphertext(&neither).is_err());
+
+        let both = AnalyzeRequest {
+            ciphertext: Some("00".to_string()),
+            ciphertext_b64: Some("AA==".to_string()),
+        };
+        assert!(decode_ciphertext(&both).is_err());
+    }
+
+    #[test]
+    fn decode_ciphertext_accepts_hex_or_base64() {
+        let hex_only = AnalyzeRequest {
+            ciphertext: Some("deadbeef".to_string()),
+            ciphertext_b64: None,
+        };
+        assert_eq!(
+            decode_ciphertext(&hex_only).unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+
+        let b64_only = AnalyzeRequest {
+            ciphertext: None,
+            ciphertext_b64: Some(BASE64.encode([0xde, 0xad, 0xbe, 0xef])),
+        };
+        assert_eq!(
+            decode_ciphertext(&b64_only).unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
 }

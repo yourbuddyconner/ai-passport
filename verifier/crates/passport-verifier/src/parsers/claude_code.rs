@@ -56,7 +56,7 @@ fn is_human_prompt(o: &Value) -> bool {
     }
 }
 
-pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
+pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, ParseError> {
     let mut external_id = String::new();
     let mut cwd: Option<String> = None;
     let mut started_at: Option<String> = None;
@@ -88,7 +88,7 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
     let mut failed = false;
     let mut edited_since_fail = false;
 
-    for (idx, o) in lines.iter().enumerate() {
+    for (idx, o) in lines.enumerate() {
         let seq = idx + 1;
         if external_id.is_empty()
             && let Some(sid) = o.get("sessionId").and_then(Value::as_str)
@@ -129,7 +129,7 @@ pub(super) fn parse(lines: &[Value]) -> Result<SessionStats, ParseError> {
         }
         message_count += 1;
 
-        if is_human_prompt(o) {
+        if is_human_prompt(&o) {
             human_turns += 1;
             if current_run > 0 {
                 runs.push(current_run);
@@ -374,7 +374,7 @@ mod tests {
     use serde_json::json;
 
     fn parse_lines(lines: Vec<Value>) -> SessionStats {
-        parse(&lines).expect("parse should succeed")
+        parse(lines.into_iter()).expect("parse should succeed")
     }
 
     #[test]

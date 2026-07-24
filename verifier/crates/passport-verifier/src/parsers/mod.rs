@@ -124,29 +124,31 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Parse a raw JSONL trace, auto-detecting the harness.
-pub fn parse_trace(text: &str) -> Result<SessionStats, ParseError> {
-    let lines: Vec<Value> = text
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            // Tolerate the odd corrupt line.
-            serde_json::from_str::<Value>(trimmed).ok()
-        })
-        .collect();
+/// Parse each line of `text` as a JSON value, tolerating the odd corrupt or
+/// blank line (they're simply skipped rather than aborting the whole trace).
+fn parsed_lines(text: &str) -> impl Iterator<Item = Value> + '_ {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+}
 
-    if lines.is_empty() {
+/// Parse a raw JSONL trace, auto-detecting the harness.
+///
+/// Streams the trace at most twice: once (truncated to 10 lines) to sniff
+/// which harness produced it, and once more, in full, through that harness's
+/// parser. Neither pass collects the whole trace into memory — traces can be
+/// tens of megabytes of JSONL, and a `Vec<Value>` of every line multiplies
+/// that several times over.
+pub fn parse_trace(text: &str) -> Result<SessionStats, ParseError> {
+    let head: Vec<Value> = parsed_lines(text).take(10).collect();
+
+    if head.is_empty() {
         return Err(ParseError("File is not valid JSONL".to_string()));
     }
 
-    let head = &lines[..lines.len().min(10)];
-    if claude_code::looks_like(head) {
-        claude_code::parse(&lines)
-    } else if codex::looks_like(head) {
-        codex::parse(&lines)
+    if claude_code::looks_like(&head) {
+        claude_code::parse(parsed_lines(text))
+    } else if codex::looks_like(&head) {
+        codex::parse(parsed_lines(text))
     } else {
         Err(ParseError(
             "Unrecognized trace format (expected Claude Code or Codex JSONL)".to_string(),
