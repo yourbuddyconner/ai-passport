@@ -1,37 +1,53 @@
 //! Shared trace heuristics — line-for-line port of worker/src/parsers/heuristics.ts.
 //! Any change here MUST be mirrored there; shared test fixtures enforce parity.
+//!
+//! This module is scaffolding for the Rust harness parsers landing in later
+//! tasks (see Task 9-11); nothing in this crate calls it yet, so the dead-code
+//! lint is silenced at the module boundary in `parsers/mod.rs` rather than
+//! per-item here.
 
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// Compile a `&'static str` regex pattern.
+///
+/// # Panics behavior
+/// This never panics at runtime: every call site passes a fixed string
+/// literal that is exercised by this module's test suite, so a compilation
+/// failure would always be caught in CI, never in production. Clippy cannot
+/// see that guarantee, hence the scoped allow.
+#[allow(clippy::unwrap_used)]
+fn regex(pattern: &'static str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
+
 static PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*(cd\s|export\s|source\s|nvm\s|conda\s|\w+=\S*\s*$)").unwrap());
+    LazyLock::new(|| regex(r"^\s*(cd\s|export\s|source\s|nvm\s|conda\s|\w+=\S*\s*$)"));
 
 static RULES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     vec![
-        ("test", Regex::new(r"\b(vitest|jest|pytest|playwright|nextest|(cargo|go|npm|pnpm|yarn|bun|make) test)\b").unwrap()),
-        ("build", Regex::new(r"\b((npm|pnpm|yarn|bun) run build|cargo build|tsc\b|vite build|make(\s|$)|docker build)\b").unwrap()),
-        ("package", Regex::new(r"\b((npm|pnpm|yarn|bun) (install|add|i)\b|pip3? install|cargo add|brew install)").unwrap()),
-        ("git", Regex::new(r"(^|\s)git\s").unwrap()),
-        ("search", Regex::new(r"^\s*(grep|rg|find|fd|ag)\b").unwrap()),
-        ("network", Regex::new(r"^\s*(curl|wget|gh|ssh)\b").unwrap()),
-        ("ops", Regex::new(r"^\s*(kubectl|docker|terraform|wrangler|aws|gcloud|flyctl|npx wrangler)\b").unwrap()),
-        ("run", Regex::new(r"^\s*(node|python3?|npx|bash|sh|cargo run|(npm|pnpm|yarn|bun) run|\./)").unwrap()),
-        ("file", Regex::new(r"^\s*(ls|cat|mkdir|cp|mv|rm|touch|head|tail|wc|sed|awk|echo|printf|chmod|sqlite3|jq|diff|tar|unzip)\b").unwrap()),
+        ("test", regex(r"\b(vitest|jest|pytest|playwright|nextest|(cargo|go|npm|pnpm|yarn|bun|make) test)\b")),
+        ("build", regex(r"\b((npm|pnpm|yarn|bun) run build|cargo build|tsc\b|vite build|make(\s|$)|docker build)\b")),
+        ("package", regex(r"\b((npm|pnpm|yarn|bun) (install|add|i)\b|pip3? install|cargo add|brew install)")),
+        ("git", regex(r"(^|\s)git\s")),
+        ("search", regex(r"^\s*(grep|rg|find|fd|ag)\b")),
+        ("network", regex(r"^\s*(curl|wget|gh|ssh)\b")),
+        ("ops", regex(r"^\s*(kubectl|docker|terraform|wrangler|aws|gcloud|flyctl|npx wrangler)\b")),
+        ("run", regex(r"^\s*(node|python3?|npx|bash|sh|cargo run|(npm|pnpm|yarn|bun) run|\./)")),
+        ("file", regex(r"^\s*(ls|cat|mkdir|cp|mv|rm|touch|head|tail|wc|sed|awk|echo|printf|chmod|sqlite3|jq|diff|tar|unzip)\b")),
     ]
 });
 
-static COMMIT_RX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bgit\b[^|;&]*\bcommit\b").unwrap());
+static COMMIT_RX: LazyLock<Regex> = LazyLock::new(|| regex(r"\bgit\b[^|;&]*\bcommit\b"));
 static SHIP_RX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bgit push\b|\bgh pr create\b|\bwrangler (deploy|publish)\b|\bflyctl deploy\b").unwrap()
+    regex(r"\bgit push\b|\bgh pr create\b|\bwrangler (deploy|publish)\b|\bflyctl deploy\b")
 });
 static GENERATED_RX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"package-lock\.json|Cargo\.lock|pnpm-lock\.yaml|yarn\.lock|\.min\.(js|css)$|/node_modules/|/dist/|/target/|/build/").unwrap()
+    regex(r"package-lock\.json|Cargo\.lock|pnpm-lock\.yaml|yarn\.lock|\.min\.(js|css)$|/node_modules/|/dist/|/target/|/build/")
 });
 
 pub(crate) fn deprefix(cmd: &str) -> String {
-    let mut segs: Vec<&str> = cmd.split(|c| c == ';').flat_map(|s| s.split("&&")).collect();
+    let mut segs: Vec<&str> = cmd.split(';').flat_map(|s| s.split("&&")).collect();
     while let Some(first) = segs.first() {
         let probe = format!("{} ", first.trim());
         if PREFIX.is_match(&probe) {
@@ -91,7 +107,7 @@ pub(crate) fn median(values: &[f64]) -> f64 {
         return 0.0;
     }
     let mut s = values.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    s.sort_by(f64::total_cmp);
     let mid = s.len() / 2;
     if s.len() % 2 == 1 { s[mid] } else { (s[mid - 1] + s[mid]) / 2.0 }
 }
@@ -116,11 +132,9 @@ pub(crate) fn compute_outcome(events: &[OutcomeEvent], tool_call_count: u64) -> 
         .filter(|e| e.kind == EventKind::Edit)
         .map(|e| e.seq)
         .collect();
-    if edits.is_empty() {
+    let (Some(&first_edit), Some(&last_edit)) = (edits.iter().min(), edits.iter().max()) else {
         return if tool_call_count >= 10 { "research" } else { "trivial" }.to_string();
-    }
-    let first_edit = *edits.iter().min().unwrap();
-    let last_edit = *edits.iter().max().unwrap();
+    };
     if events.iter().any(|e| e.kind == EventKind::Ship && e.ok && e.seq > last_edit) {
         return "shipped".to_string();
     }

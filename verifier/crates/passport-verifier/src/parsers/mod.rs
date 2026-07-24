@@ -6,6 +6,10 @@
 
 mod claude_code;
 mod codex;
+// Scaffolding for the Rust harness parsers landing in Task 9-11; nothing in
+// this crate calls it yet (only its own test suite does), so dead-code is
+// silenced here at the module boundary rather than per-item inside the module.
+#[allow(dead_code)]
 mod heuristics;
 
 use serde::Serialize;
