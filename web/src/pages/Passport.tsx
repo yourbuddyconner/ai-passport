@@ -121,7 +121,7 @@ export function Passport({ slug }: { slug: string }) {
     value: number
     format?: (n: number) => string
   }> = [
-    { icon: Robot, label: 'tool calls / prompt', value: card.agenticity },
+    { icon: Robot, label: 'tool calls / prompt (median)', value: card.agenticity },
     { icon: Timer, label: 'longest run', value: card.longestRun },
     { icon: UsersThree, label: 'delegation calls', value: card.delegationCalls },
     { icon: ArrowsClockwise, label: 'red→green cycles', value: card.redGreenCycles },
