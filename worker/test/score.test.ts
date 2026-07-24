@@ -79,3 +79,28 @@ describe('score v2', () => {
     expect(card.agenticity).toBe(6)
   })
 })
+
+describe('achievements v2', () => {
+  it('polyglot needs 5 languages with 100+ lines each', () => {
+    const card = aggregate([row({
+      languages: '{"ts":150,"rs":120,"py":100,"go":100,"sql":100,"md":50}',
+    })])
+    const a = card.achievements.find((x) => x.id === 'polyglot')!
+    expect(a.earned).toBe(true)
+  })
+  it('shipper counts shipped + landed', () => {
+    const rows = [
+      ...Array.from({ length: 20 }, () => row({ outcome: 'shipped' })),
+      ...Array.from({ length: 5 }, () => row({ outcome: 'landed' })),
+    ]
+    expect(aggregate(rows).achievements.find((x) => x.id === 'shipper')!.earned).toBe(true)
+  })
+  it('multitasker needs 3 concurrent sessions', () => {
+    const card = aggregate([
+      row({ started_at: '2026-07-01T10:00:00Z', ended_at: '2026-07-01T12:00:00Z' }),
+      row({ started_at: '2026-07-01T10:30:00Z', ended_at: '2026-07-01T12:30:00Z' }),
+      row({ started_at: '2026-07-01T11:00:00Z', ended_at: '2026-07-01T11:30:00Z' }),
+    ])
+    expect(card.achievements.find((x) => x.id === 'multitasker')!.earned).toBe(true)
+  })
+})

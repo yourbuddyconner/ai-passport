@@ -259,6 +259,15 @@ interface Derived {
   maxToolCallsInSession: number
   longestStreakDays: number
   usedSubagents: boolean
+  locAdded: number
+  languagesOver100: number
+  gitCommands: number
+  testCommands: number
+  longestRun: number
+  concludedSessions: number
+  redGreenCycles: number
+  distinctSkills: number
+  maxConcurrent: number
 }
 
 function derive(rows: SessionRow[]): Derived {
@@ -271,6 +280,14 @@ function derive(rows: SessionRow[]): Derived {
   let maxToolCallsInSession = 0
   let usedSubagents = false
   const days = new Set<string>()
+
+  let locAdded = 0
+  const languageTotals: Record<string, number> = {}
+  const commandTotals: Record<string, number> = {}
+  const outcomes: Record<string, number> = {}
+  let longestRun = 0
+  let redGreenCycles = 0
+  const distinctSkills = new Set<string>()
 
   for (const r of rows) {
     if (r.project_hash) repos.add(r.project_hash)
@@ -290,7 +307,24 @@ function derive(rows: SessionRow[]): Derived {
     }
     if (r.started_at) days.add(r.started_at.slice(0, 10))
     if (r.ended_at) days.add(r.ended_at.slice(0, 10))
+
+    locAdded += r.loc_added ?? 0
+    for (const [k, v] of Object.entries(JSON.parse(r.languages || '{}') as Record<string, number>)) {
+      languageTotals[k] = (languageTotals[k] ?? 0) + v
+    }
+    for (const [k, v] of Object.entries(JSON.parse(r.command_counts || '{}') as Record<string, number>)) {
+      commandTotals[k] = (commandTotals[k] ?? 0) + v
+    }
+    if (r.outcome) outcomes[r.outcome] = (outcomes[r.outcome] ?? 0) + 1
+    longestRun = Math.max(longestRun, r.longest_run ?? 0)
+    redGreenCycles += r.red_green_cycles ?? 0
+    for (const sk of JSON.parse(r.skills || '[]') as string[]) distinctSkills.add(sk)
   }
+
+  const languagesOver100 = Object.values(languageTotals).filter((v) => v >= 100).length
+  const gitCommands = commandTotals.git ?? 0
+  const testCommands = commandTotals.test ?? 0
+  const concludedSessions = (outcomes.shipped ?? 0) + (outcomes.landed ?? 0)
 
   let longestStreakDays = 0
   const sorted = [...days].sort()
@@ -313,6 +347,15 @@ function derive(rows: SessionRow[]): Derived {
     maxToolCallsInSession,
     longestStreakDays,
     usedSubagents,
+    locAdded,
+    languagesOver100,
+    gitCommands,
+    testCommands,
+    longestRun,
+    concludedSessions,
+    redGreenCycles,
+    distinctSkills: distinctSkills.size,
+    maxConcurrent: maxConcurrent(rows),
   }
 }
 
@@ -351,5 +394,14 @@ export function computeAchievements(d: Derived): Achievement[] {
       progress: null,
     },
     tiered('collector', 'Collector', '25 verified sessions on the ledger', d.rows.length, 25),
+    tiered('polyglot', 'Polyglot', '5 languages with 100+ lines each', d.languagesOver100, 5),
+    tiered('ten-thousand-lines', 'Ten Thousand Lines', '10,000 lines of code added', d.locAdded, 10_000),
+    tiered('git-native', 'Git Native', '250 git commands executed', d.gitCommands, 250),
+    tiered('test-runner', 'Test Runner', '100 test commands executed', d.testCommands, 100),
+    tiered('full-auto', 'Full Auto', 'A 100+ tool-call autonomous run', d.longestRun, 100),
+    tiered('shipper', 'Shipper', '25 sessions shipped or landed', d.concludedSessions, 25),
+    tiered('debugger', 'Debugger', '25 red-to-green fix cycles', d.redGreenCycles, 25),
+    tiered('skillful', 'Skillful', '10 distinct skills invoked', d.distinctSkills, 10),
+    tiered('multitasker', 'Multitasker', '3 sessions running at once', d.maxConcurrent, 3),
   ]
 }
