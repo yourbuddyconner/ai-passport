@@ -72,18 +72,74 @@ export function attestationMode(env: { VERIFIER_ATTESTED?: string }): 'attested'
   return env.VERIFIER_ATTESTED === 'true' ? 'attested' : 'dev'
 }
 
-interface RustSessionStats {
+// The enclave serializes most numeric stats via qos_json::string_or_numeric
+// (and `agenticity`, which can't round-trip through QOS's integer-only
+// canonical JSON, as a hand-rolled decimal string) so any of these may
+// arrive as a string. The v2 fields are optional here so older enclave
+// builds that predate them still decode.
+export interface RustSessionStats {
   harness: string
   external_id: string
   project_hash?: string | null
   started_at: string | null
   ended_at: string | null
-  message_count: number
-  tool_call_count: number
-  input_tokens: number
-  output_tokens: number
+  message_count: number | string
+  tool_call_count: number | string
+  input_tokens: number | string
+  output_tokens: number | string
   models: string[]
-  tool_counts: Record<string, number>
+  tool_counts: Record<string, number | string>
+  loc_added?: number | string
+  loc_removed?: number | string
+  languages?: Record<string, number | string>
+  command_counts?: Record<string, number | string>
+  human_turns?: number | string
+  agenticity?: number | string
+  longest_run?: number | string
+  parallel_batches?: number | string
+  delegation_calls?: number | string
+  verified_edit_cycles?: number | string
+  red_green_cycles?: number | string
+  outcome?: string
+  skills?: string[]
+  mcp_servers?: string[]
+  background_tasks?: number | string
+}
+
+function numberRecord(rec: Record<string, number | string> | undefined): Record<string, number> {
+  return Object.fromEntries(Object.entries(rec ?? {}).map(([k, v]) => [k, Number(v)]))
+}
+
+/** Map the enclave's snake_case wire format to the worker's SessionStats shape. */
+export function mapRustStats(s: RustSessionStats): SessionStats {
+  return {
+    harness: s.harness as SessionStats['harness'],
+    externalId: s.external_id,
+    startedAt: s.started_at,
+    endedAt: s.ended_at,
+    messageCount: Number(s.message_count),
+    toolCallCount: Number(s.tool_call_count),
+    inputTokens: Number(s.input_tokens),
+    outputTokens: Number(s.output_tokens),
+    models: s.models,
+    toolCounts: numberRecord(s.tool_counts),
+    projectHash: s.project_hash ?? null,
+    locAdded: Number(s.loc_added ?? 0),
+    locRemoved: Number(s.loc_removed ?? 0),
+    languages: numberRecord(s.languages),
+    commandCounts: numberRecord(s.command_counts),
+    humanTurns: Number(s.human_turns ?? 0),
+    agenticity: Number(s.agenticity ?? 0),
+    longestRun: Number(s.longest_run ?? 0),
+    parallelBatches: Number(s.parallel_batches ?? 0),
+    delegationCalls: Number(s.delegation_calls ?? 0),
+    verifiedEditCycles: Number(s.verified_edit_cycles ?? 0),
+    redGreenCycles: Number(s.red_green_cycles ?? 0),
+    outcome: s.outcome ?? '',
+    skills: s.skills ?? [],
+    mcpServers: s.mcp_servers ?? [],
+    backgroundTasks: Number(s.background_tasks ?? 0),
+  }
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -136,21 +192,8 @@ export async function analyzeCiphertext(
   if (signed.passport_id !== passportId)
     throw new VerifierError('enclave proof is bound to a different passport', 422)
 
-  const s = signed.stats
   return {
-    stats: {
-      harness: s.harness as SessionStats['harness'],
-      externalId: s.external_id,
-      startedAt: s.started_at,
-      endedAt: s.ended_at,
-      messageCount: Number(s.message_count),
-      toolCallCount: Number(s.tool_call_count),
-      inputTokens: Number(s.input_tokens),
-      outputTokens: Number(s.output_tokens),
-      models: s.models,
-      toolCounts: Object.fromEntries(Object.entries(s.tool_counts).map(([k, v]) => [k, Number(v)])),
-      projectHash: s.project_hash ?? null,
-    },
+    stats: mapRustStats(signed.stats),
     traceSha256: signed.trace_sha256,
     analyzedAt: Number(signed.analyzed_at),
     proof: result.proof,

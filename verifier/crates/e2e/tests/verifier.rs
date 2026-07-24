@@ -148,6 +148,75 @@ async fn test_echo_json() {
 }
 
 #[tokio::test]
+async fn test_analyze() {
+    async fn test(test_args: TestArgs) {
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/quorum_public_key", test_args.base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let json: serde_json::Value = resp.json().await.unwrap();
+        let quorum_public = P256Public::from_bytes(
+            &qos_hex::decode(json["public_key"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        // A minimal Claude Code JSONL trace with one human turn and one Bash
+        // tool call, so command_counts and outcome are non-trivially derived.
+        let trace = concat!(
+            r#"{"type":"user","sessionId":"e2e-session","timestamp":"2026-07-10T15:15:45.972Z","message":{"role":"user","content":"hello"}}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"e2e-session","timestamp":"2026-07-10T15:16:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":250},"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}"#,
+        );
+        let envelope = serde_json::json!({ "passport_id": "e2e-passport", "trace": trace });
+        let ciphertext = qos_hex::encode(
+            &quorum_public
+                .encrypt(envelope.to_string().as_bytes())
+                .unwrap(),
+        );
+
+        let resp = client
+            .post(format!("{}/analyze", test_args.base_url))
+            .json(&serde_json::json!({ "ciphertext": ciphertext }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let json: serde_json::Value = resp.json().await.unwrap();
+
+        // Verify the signature over the exact returned payload bytes, then
+        // assert the v2 fields are present in the signed payload itself
+        // (not just the outer response envelope).
+        let payload = json["proof"]["payload"].as_str().unwrap();
+        let public_key = P256Public::from_bytes(
+            &qos_hex::decode(json["proof"]["public_key"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let signature = qos_hex::decode(json["proof"]["signature"].as_str().unwrap()).unwrap();
+        public_key.verify(payload.as_bytes(), &signature).unwrap();
+
+        let signed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        let stats = &signed["stats"];
+        assert!(
+            stats.get("loc_added").is_some(),
+            "loc_added should be present in the signed payload: {stats}"
+        );
+        assert!(
+            stats.get("command_counts").is_some(),
+            "command_counts should be present in the signed payload: {stats}"
+        );
+        assert!(
+            stats.get("outcome").is_some(),
+            "outcome should be present in the signed payload: {stats}"
+        );
+    }
+    e2e::Builder::new().execute(test).await;
+}
+
+#[tokio::test]
 async fn test_metrics() {
     async fn test(test_args: TestArgs) {
         let client = reqwest::Client::new();
