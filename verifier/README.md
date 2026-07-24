@@ -67,7 +67,11 @@ Deployed on TVC dev:
 - Redeploy: bump the image tag, `make out/passport-verifier/index.json` (needs a
   `docker-container` buildx builder or the containerd image store), push with
   `docker build --output type=registry`, update `deploy.json` digests,
-  `tvc deploy create` + `tvc deploy approve` (interactive TTY).
+  `tvc deploy create` + `tvc deploy approve` (interactive TTY), then
+  `tvc app set-live-deploy --deploy-id <id>` — approval alone provisions
+  healthy replicas but never cuts traffic over (3/3 healthy, "Is Targeted
+  Deployment: no" until you set it live). Build needs
+  `BUILDX_BUILDER=tvc-builder` (plain docker driver can't export OCI).
 
 ### Gotchas discovered
 
