@@ -7,6 +7,7 @@ import {
   attestationMode,
   fetchQuorumPublicKey,
   mergeLocalV2Metrics,
+  shouldPreserveV2,
   VerifierError,
 } from './verifier'
 import { VERIFIER_DEPLOYMENT } from './deployment'
@@ -274,6 +275,10 @@ app.post('/api/passports/:id/sessions', async (c) => {
   let verification: 'enclave' | 'format' = 'format'
   let proof: string | null = null
   let ciphertext: string | null = null
+  // True only for an old (pre-v2) enclave response that never got a local
+  // v2 merge — signals the UPDATE path to leave existing v2 columns alone
+  // rather than overwrite a real stored value with zeros.
+  let preserveV2 = false
 
   // End-to-end path: the browser encrypted {passport_id, trace} to the quorum
   // key itself and sends only ciphertext — this Worker never sees plaintext.
@@ -295,6 +300,10 @@ app.post('/api/passports/:id/sessions', async (c) => {
       verification = 'enclave'
       proof = JSON.stringify(analysis.proof)
       ciphertext = body.ciphertext
+      // No local merge is possible on this path (there is no plaintext to
+      // parse), so an old enclave's zero-filled v2 fields must not
+      // overwrite a previously-stored v2 row.
+      preserveV2 = shouldPreserveV2(analysis, false)
     } catch (e) {
       if (e instanceof VerifierError) return c.json({ error: e.message }, e.status as 400)
       throw e
@@ -316,13 +325,16 @@ app.post('/api/passports/:id/sessions', async (c) => {
         // heuristic parser so uploads through an old enclave don't store
         // zeros for loc/language/agenticity/outcome/etc. Never fail the
         // upload over this — the enclave's v1 stats and proof still stand.
+        let merged = false
         if (!result.analysis.hasV2Metrics) {
           try {
             stats = mergeLocalV2Metrics(stats, parseTrace(text))
+            merged = true
           } catch {
             // keep the zero-filled enclave stats
           }
         }
+        preserveV2 = shouldPreserveV2(result.analysis, merged)
       } catch (e) {
         // 422 = the enclave parsed the trace and rejected it as invalid.
         if (e instanceof VerifierError && e.status === 422)
@@ -359,46 +371,74 @@ app.post('/api/passports/:id/sessions', async (c) => {
   // Re-uploading a known session reprocesses it in place: fresh analysis,
   // fresh proof. Lets users backfill newly added facts (e.g. repo hashes).
   if (existing) {
-    await c.env.DB.prepare(
-      `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
-         tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
-         tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
-         project_hash = ?, loc_added = ?, loc_removed = ?, languages = ?, command_counts = ?,
-         human_turns = ?, agenticity = ?, longest_run = ?, parallel_batches = ?,
-         delegation_calls = ?, verified_edit_cycles = ?, red_green_cycles = ?, outcome = ?,
-         skills = ?, mcp_servers = ?, background_tasks = ? WHERE id = ?`,
-    )
-      .bind(
-        stats.startedAt,
-        stats.endedAt,
-        stats.messageCount,
-        stats.toolCallCount,
-        stats.inputTokens,
-        stats.outputTokens,
-        JSON.stringify(stats.models),
-        JSON.stringify(stats.toolCounts),
-        verification,
-        proof,
-        r2Key,
-        projectHash,
-        stats.locAdded,
-        stats.locRemoved,
-        JSON.stringify(stats.languages),
-        JSON.stringify(stats.commandCounts),
-        stats.humanTurns,
-        stats.agenticity,
-        stats.longestRun,
-        stats.parallelBatches,
-        stats.delegationCalls,
-        stats.verifiedEditCycles,
-        stats.redGreenCycles,
-        stats.outcome,
-        JSON.stringify(stats.skills),
-        JSON.stringify(stats.mcpServers),
-        stats.backgroundTasks,
-        existing.id,
+    if (preserveV2) {
+      // Old (pre-v2) enclave build with no local merge available: stats
+      // carries zero-filled v2 fields. Leave the previously-stored v2
+      // columns untouched rather than overwrite real data with zeros.
+      await c.env.DB.prepare(
+        `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
+           tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
+           tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
+           project_hash = ? WHERE id = ?`,
       )
-      .run()
+        .bind(
+          stats.startedAt,
+          stats.endedAt,
+          stats.messageCount,
+          stats.toolCallCount,
+          stats.inputTokens,
+          stats.outputTokens,
+          JSON.stringify(stats.models),
+          JSON.stringify(stats.toolCounts),
+          verification,
+          proof,
+          r2Key,
+          projectHash,
+          existing.id,
+        )
+        .run()
+    } else {
+      await c.env.DB.prepare(
+        `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
+           tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
+           tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
+           project_hash = ?, loc_added = ?, loc_removed = ?, languages = ?, command_counts = ?,
+           human_turns = ?, agenticity = ?, longest_run = ?, parallel_batches = ?,
+           delegation_calls = ?, verified_edit_cycles = ?, red_green_cycles = ?, outcome = ?,
+           skills = ?, mcp_servers = ?, background_tasks = ? WHERE id = ?`,
+      )
+        .bind(
+          stats.startedAt,
+          stats.endedAt,
+          stats.messageCount,
+          stats.toolCallCount,
+          stats.inputTokens,
+          stats.outputTokens,
+          JSON.stringify(stats.models),
+          JSON.stringify(stats.toolCounts),
+          verification,
+          proof,
+          r2Key,
+          projectHash,
+          stats.locAdded,
+          stats.locRemoved,
+          JSON.stringify(stats.languages),
+          JSON.stringify(stats.commandCounts),
+          stats.humanTurns,
+          stats.agenticity,
+          stats.longestRun,
+          stats.parallelBatches,
+          stats.delegationCalls,
+          stats.verifiedEditCycles,
+          stats.redGreenCycles,
+          stats.outcome,
+          JSON.stringify(stats.skills),
+          JSON.stringify(stats.mcpServers),
+          stats.backgroundTasks,
+          existing.id,
+        )
+        .run()
+    }
     return c.json({ duplicate: false, reprocessed: true, session: stats, verification }, 200)
   }
   await c.env.DB.prepare(

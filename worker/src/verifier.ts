@@ -158,6 +158,23 @@ export function mergeLocalV2Metrics(
   }
 }
 
+/**
+ * Whether the stats about to be persisted for a re-upload lack real v2
+ * metrics, so the caller must avoid overwriting a previously-stored v2
+ * row with zeros. True only for an old (pre-v2) enclave response that was
+ * never merged with a local v2 parse — once merged (or if the enclave
+ * response was already v2-capable, or no enclave ran at all and stats came
+ * from the local parser directly), the stats carry real v2 data and must
+ * never be preserved-around.
+ */
+export function shouldPreserveV2(
+  analysis: { hasV2Metrics: boolean } | null,
+  merged: boolean,
+): boolean {
+  if (!analysis) return false
+  return !analysis.hasV2Metrics && !merged
+}
+
 /** Map the enclave's snake_case wire format to the worker's SessionStats shape. */
 export function mapRustStats(s: RustSessionStats): SessionStats {
   return {

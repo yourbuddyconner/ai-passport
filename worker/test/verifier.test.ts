@@ -4,6 +4,7 @@ import {
   mapRustStats,
   hasV2Metrics,
   mergeLocalV2Metrics,
+  shouldPreserveV2,
   type AppProof,
   type RustSessionStats,
 } from '../src/verifier'
@@ -292,5 +293,24 @@ describe('mergeLocalV2Metrics', () => {
     expect(hasV2Metrics(baseRustStats())).toBe(true)
     expect(enclave.locAdded).toBe(120)
     expect(enclave.outcome).toBe('landed')
+  })
+})
+
+describe('shouldPreserveV2', () => {
+  it('old (pre-v2) enclave response with no local merge: preserve stored v2 columns', () => {
+    expect(shouldPreserveV2({ hasV2Metrics: false }, false)).toBe(true)
+  })
+
+  it('old (pre-v2) enclave response that got a local v2 merge: stats are v2-complete, do not preserve', () => {
+    expect(shouldPreserveV2({ hasV2Metrics: false }, true)).toBe(false)
+  })
+
+  it('v2-capable enclave response: never preserve', () => {
+    expect(shouldPreserveV2({ hasV2Metrics: true }, false)).toBe(false)
+    expect(shouldPreserveV2({ hasV2Metrics: true }, true)).toBe(false)
+  })
+
+  it('no enclave ran (local fallback parse): never preserve', () => {
+    expect(shouldPreserveV2(null, false)).toBe(false)
   })
 })
