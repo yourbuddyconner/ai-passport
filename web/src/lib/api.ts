@@ -163,6 +163,9 @@ export async function uploadTrace(
       body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
+    if (text.length > 95 * 1024 * 1024) {
+      return { fileName: file.name, ok: false, error: 'trace exceeds the 95 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
+    }
     res = await fetch(`/api/passports/${creds.id}/sessions`, {
       method: 'POST',
       headers: { 'x-edit-token': creds.editToken, 'content-type': 'text/plain' },
@@ -264,6 +267,9 @@ export async function uploadTraceAsOwner(passportId: string, file: File): Promis
       body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
+    if (text.length > 95 * 1024 * 1024) {
+      return { fileName: file.name, ok: false, error: 'trace exceeds the 95 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
+    }
     res = await fetch(`/api/passports/${passportId}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
