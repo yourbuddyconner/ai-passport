@@ -24,7 +24,7 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
-/// A gzip stream that inflates to well over the enclave's 512MB decompressed
+/// A gzip stream that inflates to well over the enclave's 192MB decompressed
 /// cap. All-zero input compresses to a tiny stream, so this is cheap to
 /// build and cheap to ship over the wire, but expensive (deliberately, over
 /// cap) to inflate.

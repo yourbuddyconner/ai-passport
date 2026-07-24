@@ -21,7 +21,13 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
 /// Hard cap on decompressed envelope size. A zip bomb (or a corrupt/hostile
 /// stream) must fail cleanly with a 422, never exhaust enclave memory.
-const GZIP_DECOMPRESSED_CAP: u64 = 512 * 1024 * 1024;
+const GZIP_DECOMPRESSED_CAP: u64 = 192 * 1024 * 1024;
+
+/// Size of each read from the gzip stream while inflating. Keeping this
+/// fixed and small (rather than growing a `Vec` via `read_to_end`, which can
+/// double past the cap before the length check ever runs) bounds a bomb's
+/// peak memory to roughly cap-at-bail instead of up to 2x the cap.
+const INFLATE_CHUNK_BYTES: usize = 1024 * 1024;
 
 /// Decrypted request envelope. Produced client-side, encrypted to the quorum key.
 #[derive(Deserialize)]
@@ -67,19 +73,39 @@ fn decode_ciphertext(request: &AnalyzeRequest) -> Result<Vec<u8>, AppError> {
 /// unchanged. A stream that inflates past the cap is rejected outright
 /// rather than silently truncated, since a truncated envelope would just
 /// fail JSON parsing downstream with a confusing error.
+///
+/// Reads in fixed 1 MB chunks and checks the running total against the cap
+/// *before* appending each chunk, so a bomb is rejected with peak memory
+/// approximately equal to the cap rather than up to 2x it (which
+/// `.take(CAP+1).read_to_end()` would allow, since `Vec` growth can double
+/// past the cap before the post-hoc length check ever runs).
+///
+/// `GzDecoder` only reads the first gzip member of the stream and ignores
+/// any trailing bytes after it. That's safe here: the trace hash committed
+/// to in the signed proof is computed over the *inflated* envelope's `trace`
+/// field (see `trace_sha256` below), and the sender is only ever encrypting
+/// their own envelope — there's no multi-member-stream trick that lets a
+/// second member smuggle content past the hash that gets signed.
 fn maybe_inflate(plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
     if plaintext.len() < 2 || plaintext[..2] != GZIP_MAGIC {
         return Ok(plaintext);
     }
-    let mut decoder = GzDecoder::new(plaintext.as_slice()).take(GZIP_DECOMPRESSED_CAP + 1);
-    let mut inflated = Vec::new();
-    decoder
-        .read_to_end(&mut inflated)
-        .map_err(|e| AppError::unprocessable(format!("failed to inflate gzip envelope: {e}")))?;
-    if inflated.len() as u64 > GZIP_DECOMPRESSED_CAP {
-        return Err(AppError::unprocessable(
-            "gzip envelope exceeds decompressed size cap",
-        ));
+    let mut decoder = GzDecoder::new(plaintext.as_slice());
+    let mut inflated: Vec<u8> = Vec::new();
+    let mut buf = [0u8; INFLATE_CHUNK_BYTES];
+    loop {
+        let n = decoder
+            .read(&mut buf)
+            .map_err(|e| AppError::unprocessable(format!("failed to inflate gzip envelope: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        if inflated.len() as u64 + n as u64 > GZIP_DECOMPRESSED_CAP {
+            return Err(AppError::unprocessable(
+                "gzip envelope exceeds decompressed size cap",
+            ));
+        }
+        inflated.extend_from_slice(&buf[..n]);
     }
     Ok(inflated)
 }
@@ -209,13 +235,13 @@ mod tests {
 
     #[test]
     fn maybe_inflate_rejects_stream_past_cap() {
-        // Highly compressible input that inflates past the 512MB cap; keep
-        // the compressed (and in-memory decompressed) size small by using a
-        // gzip stream that lies about its own length being tiny while
-        // actually decompressing to far more than the cap. We approximate
-        // this deterministically by writing repeated zero chunks well past
-        // the cap through the encoder, which stays cheap to build because
-        // all-zero input compresses to almost nothing.
+        // Highly compressible input that inflates just past the 192MB cap;
+        // keep the compressed (and in-memory decompressed) size small by
+        // using a gzip stream that lies about its own length being tiny
+        // while actually decompressing to just over the cap. We approximate
+        // this deterministically by writing repeated zero chunks a little
+        // past the cap through the encoder, which stays cheap to build
+        // because all-zero input compresses to almost nothing.
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         let chunk = vec![0u8; 1024 * 1024];
         let cap_chunks = (GZIP_DECOMPRESSED_CAP / chunk.len() as u64) + 8;
@@ -228,6 +254,55 @@ mod tests {
         // AppError doesn't expose its status/message publicly outside the
         // crate's response module; converting to a response and checking the
         // status code is the black-box way to assert it's a 422.
+        use axum::response::IntoResponse;
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn maybe_inflate_rejects_bomb_far_past_cap() {
+        // A genuine zip-bomb shape: the stream would inflate to many times
+        // the cap (here, ~10x) if allowed to run to completion. The chunked
+        // reader must bail out as soon as the running total crosses the
+        // cap rather than continuing to inflate (and allocate) the rest of
+        // the stream, so this stays cheap to run despite the huge nominal
+        // decompressed size.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let chunk = vec![0u8; 1024 * 1024];
+        let bomb_chunks = (GZIP_DECOMPRESSED_CAP / chunk.len() as u64) * 10;
+        for _ in 0..bomb_chunks {
+            encoder.write_all(&chunk).unwrap();
+        }
+        let gzipped = encoder.finish().unwrap();
+
+        let err = maybe_inflate(gzipped).expect_err("bomb far past cap must error, not succeed");
+        use axum::response::IntoResponse;
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn maybe_inflate_accepts_exactly_at_cap() {
+        // A stream that inflates to exactly the cap must be accepted, not
+        // rejected — the check is `> CAP`, not `>= CAP`.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let payload = vec![0u8; GZIP_DECOMPRESSED_CAP as usize];
+        encoder.write_all(&payload).unwrap();
+        let gzipped = encoder.finish().unwrap();
+
+        let inflated = maybe_inflate(gzipped).expect("exactly-at-cap stream must be accepted");
+        assert_eq!(inflated.len() as u64, GZIP_DECOMPRESSED_CAP);
+    }
+
+    #[test]
+    fn maybe_inflate_rejects_corrupt_gzip_stream() {
+        // Valid gzip magic bytes followed by garbage: the decoder must
+        // surface a read error, which maps to a 422 rather than panicking
+        // or silently returning a truncated result.
+        let mut corrupt = GZIP_MAGIC.to_vec();
+        corrupt.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03]);
+
+        let err = maybe_inflate(corrupt).expect_err("corrupt gzip stream must error, not succeed");
         use axum::response::IntoResponse;
         let response = err.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);

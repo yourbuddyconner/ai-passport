@@ -1,7 +1,8 @@
 import { bytesToBase64, encryptToQuorumKeyRaw, gzipBytes } from './qosCrypto'
 
-const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
-const MAX_CIPHERTEXT_B64_LENGTH = 90 * 1024 * 1024
+const MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+const MAX_CIPHERTEXT_B64_LENGTH = 30 * 1024 * 1024
+const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024
 
 export interface PassportCredentials {
   id: string
@@ -136,7 +137,7 @@ export async function uploadTrace(
   file: File,
 ): Promise<UploadResult> {
   if (file.size > MAX_UPLOAD_BYTES) {
-    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 128 MB limit' }
   }
   const text = await file.text()
 
@@ -163,8 +164,8 @@ export async function uploadTrace(
       body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
-    if (text.length > 95 * 1024 * 1024) {
-      return { fileName: file.name, ok: false, error: 'trace exceeds the 95 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
+    if (text.length > MAX_PLAINTEXT_BYTES) {
+      return { fileName: file.name, ok: false, error: 'trace exceeds the 25 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
     }
     res = await fetch(`/api/passports/${creds.id}/sessions`, {
       method: 'POST',
@@ -244,7 +245,7 @@ export async function submitOnboarding(displayName: string, title: string): Prom
 /** Upload for a passkey-authenticated owner (session cookie, no edit token). */
 export async function uploadTraceAsOwner(passportId: string, file: File): Promise<UploadResult> {
   if (file.size > MAX_UPLOAD_BYTES) {
-    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 128 MB limit' }
   }
   const text = await file.text()
   const quorumKey = await getQuorumKey()
@@ -267,8 +268,8 @@ export async function uploadTraceAsOwner(passportId: string, file: File): Promis
       body: JSON.stringify({ ciphertextB64 }),
     })
   } else {
-    if (text.length > 95 * 1024 * 1024) {
-      return { fileName: file.name, ok: false, error: 'trace exceeds the 95 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
+    if (text.length > MAX_PLAINTEXT_BYTES) {
+      return { fileName: file.name, ok: false, error: 'trace exceeds the 25 MB plaintext limit (encrypted uploads compress — retry when the verifier is reachable)' }
     }
     res = await fetch(`/api/passports/${passportId}/sessions`, {
       method: 'POST',

@@ -33,11 +33,10 @@ type Env = {
   VERIFIER_ATTESTED?: string
 }
 
-// Matches the client's 90 MB base64 ciphertext ceiling (web/src/lib/api.ts)
-// with a little headroom; applies to both the ciphertext-envelope path and
-// the plaintext fallback (the fallback parser now streams, so it no longer
-// needs a smaller cap of its own).
-const MAX_UPLOAD_BYTES = 95 * 1024 * 1024
+// Matches the client's 30 MB base64 ciphertext ceiling (web/src/lib/api.ts).
+const MAX_CIPHERTEXT_BODY_BYTES = 30 * 1024 * 1024
+// Matches the client's 25 MB plaintext-fallback ceiling (web/src/lib/api.ts).
+const MAX_PLAINTEXT_BODY_BYTES = 25 * 1024 * 1024
 
 /** Match the enclave's project hash: truncated SHA-256 of the cwd. */
 async function hashCwd(cwd: string): Promise<string> {
@@ -272,14 +271,20 @@ app.post('/api/passports/:id/sessions', async (c) => {
   if (!isOwner && (!token || token !== passport.edit_token))
     return c.json({ error: 'not authorized for this passport' }, 403)
 
+  const isJsonBody = c.req.header('content-type')?.includes('application/json') ?? false
   const len = Number(c.req.header('content-length') ?? 0)
-  if (len > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 95 MB)' }, 413)
+  if (isJsonBody) {
+    if (len > MAX_CIPHERTEXT_BODY_BYTES) return c.json({ error: 'ciphertext body too large (max 30 MB)' }, 413)
+  } else {
+    if (len > MAX_PLAINTEXT_BODY_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
+  }
   const text = await c.req.text()
 
   let stats: SessionStats | null = null
   let verification: 'enclave' | 'format' = 'format'
   let proof: string | null = null
   let ciphertext: string | null = null
+  let ciphertextEncoding: 'hex' | 'base64' = 'hex'
   // True only for an old (pre-v2) enclave response that never got a local
   // v2 merge — signals the UPDATE path to leave existing v2 columns alone
   // rather than overwrite a real stored value with zeros.
@@ -309,6 +314,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
       verification = 'enclave'
       proof = JSON.stringify(analysis.proof)
       ciphertext = envelope.value
+      ciphertextEncoding = envelope.encoding
       // No local merge is possible on this path (there is no plaintext to
       // parse), so an old enclave's zero-filled v2 fields must not
       // overwrite a previously-stored v2 row.
@@ -321,7 +327,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
     // Plaintext path: prefer the enclave (Worker-side encryption); fall back
     // to in-Worker parsing so the app keeps working when no verifier is
     // configured or reachable.
-    if (text.length > MAX_UPLOAD_BYTES) return c.json({ error: 'file too large (max 95 MB)' }, 413)
+    if (text.length > MAX_PLAINTEXT_BODY_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
     if (c.env.VERIFIER_URL) {
       try {
         const result = await analyzeViaEnclave(c.env.VERIFIER_URL, id, text)
@@ -372,7 +378,9 @@ app.post('/api/passports/:id/sessions', async (c) => {
   let r2Key: string | null = null
   if (ciphertext && c.env.TRACES) {
     r2Key = `traces/${id}/${stats.externalId}.enc`
-    await c.env.TRACES.put(r2Key, ciphertext)
+    await c.env.TRACES.put(r2Key, ciphertext, {
+      customMetadata: { encoding: ciphertextEncoding },
+    })
   }
 
   const projectHash = stats.projectHash ?? (stats.cwd ? await hashCwd(stats.cwd) : null)

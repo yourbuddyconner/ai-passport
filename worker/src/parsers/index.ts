@@ -10,14 +10,26 @@ export type { SessionStats, Harness } from './types'
  * blank line (they're simply skipped rather than aborting the whole trace).
  */
 function* parsedLines(text: string): Generator<unknown> {
-  for (const line of text.split('\n')) {
+  // Walk the string with indexOf('\n') from a moving offset instead of
+  // text.split('\n') — split materializes an array holding every line of
+  // the trace at once, which for a many-MB JSONL file multiplies peak
+  // memory several times over. Slicing one line at a time yields the same
+  // lines without ever building that array.
+  let offset = 0
+  while (offset <= text.length) {
+    const newlineIndex = text.indexOf('\n', offset)
+    const end = newlineIndex === -1 ? text.length : newlineIndex
+    const line = text.slice(offset, end)
     const trimmed = line.trim()
-    if (!trimmed) continue
-    try {
-      yield JSON.parse(trimmed)
-    } catch {
-      // tolerate the odd corrupt line
+    if (trimmed) {
+      try {
+        yield JSON.parse(trimmed)
+      } catch {
+        // tolerate the odd corrupt line
+      }
     }
+    if (newlineIndex === -1) break
+    offset = newlineIndex + 1
   }
 }
 

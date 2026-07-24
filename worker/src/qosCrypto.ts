@@ -24,8 +24,23 @@ export function hexToBytes(hex: string): Uint8Array {
   return out
 }
 
+// 256-entry two-char lookup table, built once at module load.
+const HEX_LUT: string[] = Array.from({ length: 256 }, (_, b) => b.toString(16).padStart(2, '0'))
+
+// Chunked to avoid holding one giant intermediate array/string for large
+// inputs (e.g. a multi-MB ciphertext): build 64 KB worth of hex text at a
+// time and join the chunks, rather than mapping the whole byte array at once.
+const HEX_CHUNK_BYTES = 64 * 1024
+
 export function bytesToHex(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const chunks: string[] = []
+  for (let offset = 0; offset < bytes.length; offset += HEX_CHUNK_BYTES) {
+    const end = Math.min(offset + HEX_CHUNK_BYTES, bytes.length)
+    let chunk = ''
+    for (let i = offset; i < end; i++) chunk += HEX_LUT[bytes[i]]
+    chunks.push(chunk)
+  }
+  return chunks.join('')
 }
 
 function concat(...parts: Uint8Array[]): Uint8Array {
