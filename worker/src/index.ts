@@ -1,7 +1,14 @@
 import { Hono, type Context } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
-import { recomputeVerifiedScore } from './ranking'
+import {
+  includeGlobalRank,
+  pickSpotlights,
+  rankEntries,
+  rankIfListed,
+  recomputeVerifiedScore,
+  type LeaderboardRow,
+} from './ranking'
 import {
   analyzeCiphertext,
   analyzeCiphertextRaw,
@@ -65,6 +72,29 @@ async function authorizePassport(
   if (!isOwner && (!token || token !== passport.edit_token))
     return c.json({ error: 'not authorized for this passport' }, 403)
   return { passport, isOwner }
+}
+
+// The leaderboard population: listed passports with ≥1 enclave-verified
+// session, aggregated straight in SQL (no per-entry JS aggregate() calls).
+// The INNER JOIN guarantees the "≥1 verified session" requirement without a
+// separate EXISTS clause. Shared by /api/leaderboard and the globalRank /
+// listedCount fields on the card + dashboard payloads so they all agree on
+// one ranking.
+const LEADERBOARD_QUERY = `
+  SELECT p.slug AS slug, p.name AS name, p.verified_score AS verifiedScore,
+         p.created_at AS createdAt, COUNT(s.id) AS sessions,
+         COALESCE(SUM(s.loc_added), 0) AS locAdded,
+         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions
+  FROM passports p
+  JOIN sessions s ON s.passport_id = p.id AND s.verification = 'enclave'
+  WHERE p.listed = 1
+  GROUP BY p.id
+  ORDER BY p.verified_score DESC, p.created_at ASC
+`
+
+async function loadLeaderboardEntries(db: D1Database) {
+  const { results } = await db.prepare(LEADERBOARD_QUERY).all<LeaderboardRow>()
+  return rankEntries(results ?? [])
 }
 
 /** Match the enclave's project hash: truncated SHA-256 of the cwd. */
@@ -175,11 +205,18 @@ app.get('/api/me', async (c) => {
   const user = await userFromCookie(c.env, c.req.header('cookie'))
   if (!user) return c.json({ error: 'not signed in' }, 401)
   const passport = await c.env.DB.prepare(
-    'SELECT id, slug, name FROM passports WHERE user_id = ?',
+    'SELECT id, slug, name, listed, verified_score FROM passports WHERE user_id = ?',
   )
     .bind(user.id)
-    .first<{ id: string; slug: string; name: string }>()
+    .first<{ id: string; slug: string; name: string; listed: number; verified_score: number }>()
   if (!passport) return c.json({ error: 'no passport for user' }, 500)
+
+  // Dashboard preview has no small-N floor (unlike the public card payload):
+  // the owner always gets to see where they'd land.
+  const isListed = !!passport.listed
+  const leaderboardEntries = await loadLeaderboardEntries(c.env.DB)
+  const listedCount = leaderboardEntries.length
+  const ownEntry = leaderboardEntries.find((e) => e.slug === passport.slug)
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
@@ -201,6 +238,10 @@ app.get('/api/me', async (c) => {
   return c.json({
     user: { displayName: user.displayName, title: user.title, onboarded: user.onboarded },
     passport,
+    listed: isListed,
+    listedCount,
+    globalRank: isListed ? (ownEntry?.rank ?? null) : null,
+    rankIfListed: isListed ? null : rankIfListed(leaderboardEntries, passport.verified_score),
     card: aggregate(rows),
     sessions: rows.map((r) => ({
       externalId: r.external_id,
@@ -612,13 +653,53 @@ app.delete('/api/passports/:id/sessions/:externalId', async (c) => {
   return c.json({ ok: true })
 })
 
+// Toggle leaderboard listing. Always recomputes verified_score in either
+// direction — this doubles as the backfill path for passports created
+// before verified_score existed, since a listing toggle is the first time
+// we know we need the number to be right.
+app.patch('/api/passports/:id', async (c) => {
+  const id = c.req.param('id')
+  const auth = await authorizePassport(c, id)
+  if (auth instanceof Response) return auth
+
+  const body = await c.req.json().catch(() => null)
+  if (typeof body?.listed !== 'boolean') return c.json({ error: 'listed must be a boolean' }, 400)
+
+  await c.env.DB.prepare('UPDATE passports SET listed = ? WHERE id = ?')
+    .bind(body.listed ? 1 : 0, id)
+    .run()
+  const verifiedScore = await recomputeVerifiedScore(c.env.DB, id)
+  return c.json({ listed: body.listed, verifiedScore })
+})
+
+// Listed passports with ≥1 enclave-verified session, ranked by verified_score.
+app.get('/api/leaderboard', async (c) => {
+  const entries = await loadLeaderboardEntries(c.env.DB)
+  const spotlights = pickSpotlights(entries)
+  c.header('Cache-Control', 'public, max-age=60')
+  return c.json({
+    total: entries.length,
+    entries: entries.map((e) => ({
+      rank: e.rank,
+      slug: e.slug,
+      name: e.name,
+      grade: e.grade,
+      verifiedScore: e.verifiedScore,
+      sessions: e.sessions,
+      locAdded: e.locAdded,
+      concludedSessions: e.concludedSessions,
+    })),
+    spotlights,
+  })
+})
+
 app.get('/api/passports/slug/:slug', async (c) => {
   const slug = c.req.param('slug')
   const passport = await c.env.DB.prepare(
-    'SELECT id, slug, name, created_at FROM passports WHERE slug = ?',
+    'SELECT id, slug, name, created_at, listed FROM passports WHERE slug = ?',
   )
     .bind(slug)
-    .first<{ id: string; slug: string; name: string; created_at: string }>()
+    .first<{ id: string; slug: string; name: string; created_at: string; listed: number }>()
   if (!passport) return c.json({ error: 'passport not found' }, 404)
 
   const { results } = await c.env.DB.prepare(
@@ -633,6 +714,19 @@ app.get('/api/passports/slug/:slug', async (c) => {
     .all<SessionRow & { external_id: string; verification: string; proof: string | null }>()
 
   const rows = results ?? []
+
+  // Public floor: only surface globalRank/listedCount once the leaderboard
+  // is big enough that a single rank isn't a de-facto exact-score reveal.
+  let rankFields: { globalRank: number; listedCount: number } | Record<string, never> = {}
+  if (passport.listed) {
+    const entries = await loadLeaderboardEntries(c.env.DB)
+    const listedCount = entries.length
+    const entry = entries.find((e) => e.slug === passport.slug)
+    if (entry && includeGlobalRank(listedCount)) {
+      rankFields = { globalRank: entry.rank, listedCount }
+    }
+  }
+
   return c.json({
     passport: { slug: passport.slug, name: passport.name, createdAt: passport.created_at },
     card: aggregate(rows),
@@ -650,6 +744,7 @@ app.get('/api/passports/slug/:slug', async (c) => {
       verification: r.verification,
       proof: r.proof ? (JSON.parse(r.proof) as unknown) : null,
     })),
+    ...rankFields,
   })
 })
 

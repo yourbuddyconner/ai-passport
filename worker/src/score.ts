@@ -71,12 +71,16 @@ export interface CardData {
   maxConcurrentSessions: number
 }
 
-const GRADES: Array<[number, string]> = [
+export const GRADES: Array<[number, string]> = [
   [80, 'AI-Native'],
   [55, 'Power User'],
   [30, 'Practitioner'],
   [0, 'Novice'],
 ]
+
+export function gradeForScore(score: number): string {
+  return GRADES.find(([min]) => score >= min)![1]
+}
 
 /** Log-curve contribution: 0 at 10^floorLog, max at 10^ceilLog, clamped. */
 function logDim(value: number, max: number, floorLog: number, ceilLog: number): number {
@@ -195,7 +199,7 @@ export function aggregate(rows: SessionRow[]): CardData {
   const score = Math.round(
     Object.values(breakdown).reduce((a, b) => a + b, 0),
   )
-  const grade = GRADES.find(([min]) => score >= min)![1]
+  const grade = gradeForScore(score)
 
   const totalCommands = Object.values(commandTotals).reduce((a, b) => a + b, 0)
   const commandMix = Object.entries(commandTotals)
