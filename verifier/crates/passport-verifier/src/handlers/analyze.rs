@@ -673,6 +673,20 @@ mod tests {
         err.into_response().status()
     }
 
+    /// Extract the status code and `error` field of an [`AppError`]'s JSON
+    /// response body, so tests can assert on *which* failure occurred, not
+    /// just the status code -- several distinct failure modes on
+    /// `/analyze_raw` share a 422.
+    async fn status_and_message(err: AppError) -> (axum::http::StatusCode, String) {
+        use axum::response::IntoResponse;
+        use http_body_util::BodyExt;
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json["error"].as_str().unwrap().to_string())
+    }
+
     #[tokio::test]
     async fn analyze_raw_matches_json_path_stats_and_hash() {
         let json_state = raw_test_state();
@@ -771,12 +785,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn analyze_raw_rejects_stream_past_cap() {
+    async fn analyze_raw_rejects_stream_past_cap_with_distinct_message() {
         let state = raw_test_state();
         // Highly compressible input that inflates well past the 192MB cap;
-        // cheap to build and ship since it's all zeroes.
+        // cheap to build and ship since it's all zeroes. Each ~1MB chunk is
+        // newline-terminated so this exercises the *decompressed-size-cap*
+        // path specifically (HashingCappedReader / CAP_EXCEEDED_IO_MSG),
+        // not the per-line cap from `analyze_raw_rejects_newline_free_line_over_cap`
+        // -- an unbroken newline-free stream would trip the 32MB line cap
+        // long before ever reaching the 192MB decompressed cap. Also
+        // asserts the error message text so the two 422 cap-style failures
+        // (decompressed-size cap vs. per-line cap) are distinguishable.
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-        let chunk = vec![0u8; 1024 * 1024];
+        let mut chunk = vec![0u8; 1024 * 1024 - 1];
+        chunk.push(b'\n');
         let cap_chunks = (GZIP_DECOMPRESSED_CAP / chunk.len() as u64) + 8;
         for _ in 0..cap_chunks {
             encoder.write_all(&chunk).unwrap();
@@ -788,7 +810,13 @@ mod tests {
             Ok(_) => panic!("expected an error"),
             Err(e) => e,
         };
-        assert_eq!(status_of(err), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, message) = status_and_message(err).await;
+        assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(message, "decompressed size cap exceeded");
+        assert_ne!(
+            message, "line exceeds 32 MB",
+            "cap breach must not be reported as a per-line overrun"
+        );
     }
 
     #[tokio::test]
@@ -805,7 +833,13 @@ mod tests {
             Ok(_) => panic!("expected an error"),
             Err(e) => e,
         };
-        assert_eq!(status_of(err), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, message) = status_and_message(err).await;
+        assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(message, "line exceeds 32 MB");
+        assert_ne!(
+            message, "decompressed size cap exceeded",
+            "per-line overrun must not be reported as a decompressed-cap breach"
+        );
     }
 
     #[tokio::test]

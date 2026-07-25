@@ -27,10 +27,18 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
 /// A gzip stream that inflates to well over the enclave's 192MB decompressed
 /// cap. All-zero input compresses to a tiny stream, so this is cheap to
 /// build and cheap to ship over the wire, but expensive (deliberately, over
-/// cap) to inflate.
+/// cap) to inflate. Shared by the `/analyze` (JSON) and `/analyze_raw`
+/// (binary streaming) bomb tests; each ~1MB chunk is newline-terminated so
+/// that on the streaming path this exercises the decompressed-size cap
+/// specifically, not the per-line cap -- an unbroken newline-free stream of
+/// this size would trip the enclave's 32MB per-line cap long before ever
+/// reaching the 192MB decompressed cap. Newlines are no-ops for the JSON
+/// `/analyze` path (`maybe_inflate` has no line concept), so this shape is
+/// safe for both bomb tests.
 fn oversized_gzip_payload() -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    let chunk = vec![0u8; 1024 * 1024];
+    let mut chunk = vec![0u8; 1024 * 1024 - 1];
+    chunk.push(b'\n');
     for _ in 0..600 {
         encoder.write_all(&chunk).unwrap();
     }
@@ -506,6 +514,12 @@ async fn test_analyze_raw_gzip_bomb_rejected() {
         let framed = frame_raw_envelope("e2e-raw-bomb", &oversized_gzip_payload());
         let resp = post_analyze_raw(&client, &test_args.base_url, &quorum_public, &framed).await;
         assert_eq!(resp.status(), 422);
+        let json: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            json["error"], "decompressed size cap exceeded",
+            "the newline-bearing bomb fixture must reach the decompressed-size cap, \
+             not the per-line cap"
+        );
     }
     e2e::Builder::new().execute(test).await;
 }
