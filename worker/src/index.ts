@@ -1,6 +1,7 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
+import { recomputeVerifiedScore } from './ranking'
 import {
   analyzeCiphertext,
   analyzeCiphertextRaw,
@@ -39,6 +40,32 @@ type Env = {
 const MAX_CIPHERTEXT_BODY_BYTES = 30 * 1024 * 1024
 // Matches the client's 25 MB plaintext-fallback ceiling (web/src/lib/api.ts).
 const MAX_PLAINTEXT_BODY_BYTES = 25 * 1024 * 1024
+
+// Shared by session write/delete routes: a passport is editable by its
+// signed-in owner (passkey session cookie) or by anyone holding the
+// legacy anonymous edit token. Returns the passport row + ownership flag,
+// or the 404/403 Response to return as-is when unauthorized.
+async function authorizePassport(
+  c: Context<{ Bindings: Env }>,
+  passportId: string,
+): Promise<
+  | { passport: { id: string; edit_token: string; user_id: string | null }; isOwner: boolean }
+  | Response
+> {
+  const passport = await c.env.DB.prepare(
+    'SELECT id, edit_token, user_id FROM passports WHERE id = ?',
+  )
+    .bind(passportId)
+    .first<{ id: string; edit_token: string; user_id: string | null }>()
+  if (!passport) return c.json({ error: 'passport not found' }, 404)
+  // Owner via passkey session cookie, or legacy anonymous edit token.
+  const user = await userFromCookie(c.env, c.req.header('cookie'))
+  const token = c.req.header('x-edit-token')
+  const isOwner = !!user && passport.user_id === user.id
+  if (!isOwner && (!token || token !== passport.edit_token))
+    return c.json({ error: 'not authorized for this passport' }, 403)
+  return { passport, isOwner }
+}
 
 /** Match the enclave's project hash: truncated SHA-256 of the cwd. */
 async function hashCwd(cwd: string): Promise<string> {
@@ -260,18 +287,8 @@ app.get('/api/passports/:id', async (c) => {
 
 app.post('/api/passports/:id/sessions', async (c) => {
   const id = c.req.param('id')
-  const token = c.req.header('x-edit-token')
-  const passport = await c.env.DB.prepare(
-    'SELECT id, edit_token, user_id FROM passports WHERE id = ?',
-  )
-    .bind(id)
-    .first<{ id: string; edit_token: string; user_id: string | null }>()
-  if (!passport) return c.json({ error: 'passport not found' }, 404)
-  // Owner via passkey session cookie, or legacy anonymous edit token.
-  const user = await userFromCookie(c.env, c.req.header('cookie'))
-  const isOwner = !!user && passport.user_id === user.id
-  if (!isOwner && (!token || token !== passport.edit_token))
-    return c.json({ error: 'not authorized for this passport' }, 403)
+  const auth = await authorizePassport(c, id)
+  if (auth instanceof Response) return auth
 
   const contentType = c.req.header('content-type') ?? ''
   const isRawBody = contentType.startsWith('application/octet-stream')
@@ -510,6 +527,13 @@ app.post('/api/passports/:id/sessions', async (c) => {
         )
         .run()
     }
+    try {
+      await recomputeVerifiedScore(c.env.DB, id)
+    } catch (e) {
+      // verified_score is derived state, repairable by the next write — don't
+      // fail the upload over a recompute hiccup.
+      console.error('verified_score recompute failed:', e)
+    }
     return c.json({ duplicate: false, reprocessed: true, session: stats, verification }, 200)
   }
   await c.env.DB.prepare(
@@ -557,22 +581,20 @@ app.post('/api/passports/:id/sessions', async (c) => {
       stats.backgroundTasks,
     )
     .run()
+  try {
+    await recomputeVerifiedScore(c.env.DB, id)
+  } catch (e) {
+    // verified_score is derived state, repairable by the next write — don't
+    // fail the upload over a recompute hiccup.
+    console.error('verified_score recompute failed:', e)
+  }
   return c.json({ duplicate: false, session: stats, verification }, 201)
 })
 
 app.delete('/api/passports/:id/sessions/:externalId', async (c) => {
   const id = c.req.param('id')
-  const passport = await c.env.DB.prepare(
-    'SELECT id, edit_token, user_id FROM passports WHERE id = ?',
-  )
-    .bind(id)
-    .first<{ id: string; edit_token: string; user_id: string | null }>()
-  if (!passport) return c.json({ error: 'passport not found' }, 404)
-  const user = await userFromCookie(c.env, c.req.header('cookie'))
-  const token = c.req.header('x-edit-token')
-  const isOwner = !!user && passport.user_id === user.id
-  if (!isOwner && (!token || token !== passport.edit_token))
-    return c.json({ error: 'not authorized for this passport' }, 403)
+  const auth = await authorizePassport(c, id)
+  if (auth instanceof Response) return auth
 
   const row = await c.env.DB.prepare(
     'SELECT id, r2_key FROM sessions WHERE passport_id = ? AND external_id = ?',
@@ -582,6 +604,11 @@ app.delete('/api/passports/:id/sessions/:externalId', async (c) => {
   if (!row) return c.json({ error: 'session not found' }, 404)
   if (row.r2_key && c.env.TRACES) await c.env.TRACES.delete(row.r2_key)
   await c.env.DB.prepare('DELETE FROM sessions WHERE id = ?').bind(row.id).run()
+  try {
+    await recomputeVerifiedScore(c.env.DB, id)
+  } catch (e) {
+    console.error('verified_score recompute failed:', e)
+  }
   return c.json({ ok: true })
 })
 
