@@ -280,7 +280,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
   if (isRawBody) {
     // Pre-check when content-length is present so we can fail fast without
     // buffering the body; the authoritative check below is on actual bytes.
-    if (rawBodyTooLarge(len)) return c.json({ error: 'ciphertext body too large (max 64 MB)' }, 413)
+    if (rawBodyTooLarge(len)) return c.json({ error: 'ciphertext body too large (max 48 MB)' }, 413)
   } else if (isJsonBody) {
     if (len > MAX_CIPHERTEXT_BODY_BYTES) return c.json({ error: 'ciphertext body too large (max 30 MB)' }, 413)
   } else {
@@ -304,7 +304,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
     // Authoritative check on actual bytes read, regardless of what (or
     // whether) content-length claimed.
     if (rawBodyTooLarge(rawBytes.byteLength))
-      return c.json({ error: 'ciphertext body too large (max 64 MB)' }, 413)
+      return c.json({ error: 'ciphertext body too large (max 48 MB)' }, 413)
   } else {
     text = await c.req.text()
   }

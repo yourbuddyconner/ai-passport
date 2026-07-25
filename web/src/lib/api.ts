@@ -2,8 +2,9 @@ import { buildBinaryEnvelope, encryptToQuorumKeyRaw, gzipBytes } from './qosCryp
 import { canonicalizeTrace } from './canonicalize'
 
 const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
-const MAX_CIPHERTEXT_BYTES = 64 * 1024 * 1024
+const MAX_CIPHERTEXT_BYTES = 48 * 1024 * 1024
 const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024
+const MAX_CANONICALIZED_BYTES = 192 * 1024 * 1024
 
 export interface PassportCredentials {
   id: string
@@ -149,6 +150,13 @@ export async function uploadTrace(
   const quorumKey = await getQuorumKey()
   let res: Response
   if (quorumKey) {
+    if (text.length > MAX_CANONICALIZED_BYTES) {
+      return {
+        fileName: file.name,
+        ok: false,
+        error: 'trace exceeds the verifier limit even after canonicalization — split the session',
+      }
+    }
     const gz = await gzipBytes(new TextEncoder().encode(text))
     const raw = await encryptToQuorumKeyRaw(quorumKey, buildBinaryEnvelope(creds.id, gz))
     if (raw.byteLength > MAX_CIPHERTEXT_BYTES) {
@@ -251,6 +259,13 @@ export async function uploadTraceAsOwner(passportId: string, file: File): Promis
   const quorumKey = await getQuorumKey()
   let res: Response
   if (quorumKey) {
+    if (text.length > MAX_CANONICALIZED_BYTES) {
+      return {
+        fileName: file.name,
+        ok: false,
+        error: 'trace exceeds the verifier limit even after canonicalization — split the session',
+      }
+    }
     const gz = await gzipBytes(new TextEncoder().encode(text))
     const raw = await encryptToQuorumKeyRaw(quorumKey, buildBinaryEnvelope(passportId, gz))
     if (raw.byteLength > MAX_CIPHERTEXT_BYTES) {

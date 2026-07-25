@@ -248,16 +248,6 @@ export function parseCiphertextEnvelope(body: {
 }
 
 /**
- * Send an already-encrypted envelope to the enclave and verify the returned
- * proof: signature over the exact payload bytes and the passport binding.
- * (When the caller encrypted client-side we never see the plaintext, so the
- * trace hash in the signed payload is recorded, not re-derived.)
- *
- * The envelope is forwarded verbatim: hex arrives as `{ciphertext}`, base64
- * as `{ciphertext_b64}` (the enclave's wire format, snake_case) — no
- * re-encoding happens in the Worker either way.
- */
-/**
  * Shared response handling for both /analyze (JSON ciphertext) and
  * /analyze_raw (binary ciphertext): both return the identical
  * `{payload, proof}` JSON shape signed by the enclave's ephemeral key.

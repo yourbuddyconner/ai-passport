@@ -3,8 +3,8 @@
 // the app (index.ts transitively imports workers-og, whose wasm asset
 // vitest's node environment can't load outside a wrangler runtime).
 
-// Matches the client's 64 MB raw binary ciphertext ceiling (web/src/lib/api.ts).
-export const MAX_RAW_CIPHERTEXT_BODY_BYTES = 64 * 1024 * 1024
+// Matches the client's 48 MB raw binary ciphertext ceiling (web/src/lib/api.ts).
+export const MAX_RAW_CIPHERTEXT_BODY_BYTES = 48 * 1024 * 1024
 
 // Cheap abuse guard: a passport with this many sessions already has to shed
 // load before accepting more uploads. A plain COUNT(*) is cheap in D1.
@@ -17,7 +17,7 @@ export function sessionQuotaExceeded(count: number, limit = SESSION_QUOTA_LIMIT)
 
 /**
  * The counted-byte guard applied to a raw octet-stream body: true once the
- * actually-read byte length exceeds the 64 MB ceiling. Also used as a fast
+ * actually-read byte length exceeds the 48 MB ceiling. Also used as a fast
  * pre-check against a claimed content-length header before the body is read.
  */
 export function rawBodyTooLarge(byteLength: number, limit = MAX_RAW_CIPHERTEXT_BODY_BYTES): boolean {
