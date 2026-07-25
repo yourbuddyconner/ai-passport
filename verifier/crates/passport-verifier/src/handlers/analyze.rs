@@ -32,6 +32,22 @@ const GZIP_DECOMPRESSED_CAP: u64 = 192 * 1024 * 1024;
 /// peak memory to roughly cap-at-bail instead of up to 2x the cap.
 const INFLATE_CHUNK_BYTES: usize = 1024 * 1024;
 
+/// Hard cap on a single JSONL line's byte length in the `/analyze_raw`
+/// streaming path. Without this, a newline-free input (a single-line "zip
+/// bomb") would defeat the O(buffer) memory guarantee entirely: reading up
+/// to a `\n` with no cap accumulates one unbounded `String` that can reach
+/// the full 192MB decompressed cap (with realloc doubling along the way) in
+/// one `read_line` call, before the line-handling code ever gets to look at
+/// it. 32MB is comfortably larger than any legitimate single JSONL record
+/// while still bounding worst-case per-line memory tightly.
+const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
+
+/// The exact message [`HashingCappedReader`] uses for a cap breach, matched
+/// on below to give that specific failure its own error message distinct
+/// from other IO failures (corrupt gzip, etc.) that flow through the same
+/// `io::Error` path.
+const CAP_EXCEEDED_IO_MSG: &str = "gzip envelope exceeds decompressed size cap";
+
 /// Decrypted request envelope. Produced client-side, encrypted to the quorum key.
 #[derive(Deserialize)]
 struct AnalyzeEnvelope {
@@ -246,9 +262,7 @@ impl<R: Read> Read for HashingCappedReader<R> {
         }
         self.total += n as u64;
         if self.total > GZIP_DECOMPRESSED_CAP {
-            return Err(io::Error::other(
-                "gzip envelope exceeds decompressed size cap",
-            ));
+            return Err(io::Error::other(CAP_EXCEEDED_IO_MSG));
         }
         self.hasher.update(&buf[..n]);
         Ok(n)
@@ -308,69 +322,122 @@ fn parse_raw_framing(plaintext: &[u8]) -> Result<(String, &[u8]), AppError> {
 /// Those bytes are still read through the hashing reader and are still
 /// included in `trace_sha256`, since the hash commits to every byte of the
 /// inflated stream, not just the bytes that happened to parse.
+///
+/// Per-line memory is bounded too: lines are read manually via
+/// `read_until` through a [`MAX_LINE_BYTES`]-limited `Take`, rather than
+/// `BufRead::lines()`. `lines()` has no per-line cap of its own -- a
+/// newline-free input (a single-line "zip bomb") would otherwise accumulate
+/// one unbounded `String` up to the full decompressed cap (with realloc
+/// doubling along the way) before any line-handling code ever ran. A line
+/// that hits the cap without finding a newline is rejected outright (422)
+/// rather than silently truncated.
 pub(crate) async fn analyze_raw(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<Json<AnalyzeResponse>, AppError> {
-    let ciphertext = body.to_vec();
-    drop(body);
-
     let plaintext = state
         .quorum_key
-        .decrypt(&ciphertext)
+        .decrypt(&body)
         .map_err(|e| AppError::bad_request(format!("failed to decrypt ciphertext: {e:?}")))?;
-    drop(ciphertext);
+    drop(body);
 
     let (passport_id, gz) = parse_raw_framing(&plaintext)?;
 
     let cap_reader = HashingCappedReader::new(GzDecoder::new(gz));
-    let mut buf_reader = BufReader::new(cap_reader);
+    // 1 MB (vs. the 8KB default): far fewer syscalls/refills across a large
+    // trace, which is what actually dominates inflate time for this path.
+    let mut buf_reader = BufReader::with_capacity(1024 * 1024, cap_reader);
 
-    // Shared with the `from_fn` iterator below: `BufRead::lines()` does not
-    // stop iterating on its own after an `io::Error` (it just returns
-    // `Some(Err(..))` for that call and can be polled again), so this can't
-    // be handled with a `filter_map` that quietly maps errors to `None` --
-    // that would poll the errored reader forever. Instead the adapter below
-    // latches the first IO error here and stops producing values for good.
-    let io_error: Rc<RefCell<Option<io::Error>>> = Rc::new(RefCell::new(None));
-    let io_error_writer = Rc::clone(&io_error);
+    // Distinguishes *why* the stream reader stopped early, so callers get a
+    // specific error message instead of one generic "failed to inflate"
+    // for every failure mode.
+    enum StreamFailure {
+        Io(io::Error),
+        InvalidUtf8,
+        LineTooLong,
+    }
+
+    // Shared with the `from_fn` iterator below: a manual `read_until` loop
+    // (unlike `BufRead::lines()`) stops cleanly on its own once we choose
+    // to stop calling it, but the closure still needs a way to hand the
+    // failure detail back out to the caller once the iterator is dropped.
+    let failure: Rc<RefCell<Option<StreamFailure>>> = Rc::new(RefCell::new(None));
+    let failure_writer = Rc::clone(&failure);
 
     let parse_result = {
-        let mut lines = (&mut buf_reader).lines();
+        let mut reader = &mut buf_reader;
         // Mirrors `parsers::parsed_lines`: trim each line, silently skip
         // ones that don't parse as JSON (blank lines, trailing garbage,
-        // the odd corrupt line).
+        // the odd corrupt line) -- except a line that overruns
+        // `MAX_LINE_BYTES` without a newline, which is a hard error.
         let values = std::iter::from_fn(move || {
+            let mut line_buf: Vec<u8> = Vec::new();
             loop {
-                if io_error_writer.borrow().is_some() {
-                    return None;
-                }
-                match lines.next() {
-                    None => return None,
-                    Some(Err(e)) => {
-                        *io_error_writer.borrow_mut() = Some(e);
+                line_buf.clear();
+                let read = {
+                    let mut limited = (&mut reader).take(MAX_LINE_BYTES as u64);
+                    limited.read_until(b'\n', &mut line_buf)
+                };
+                let read = match read {
+                    Ok(n) => n,
+                    Err(e) => {
+                        *failure_writer.borrow_mut() = Some(StreamFailure::Io(e));
                         return None;
                     }
-                    Some(Ok(line)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-                            return Some(value);
-                        }
-                        // Unparseable line: skip, same as the JSON path.
-                    }
+                };
+                if read == 0 {
+                    // True EOF: nothing left to read at all.
+                    return None;
                 }
+                let hit_newline = line_buf.last() == Some(&b'\n');
+                if !hit_newline && line_buf.len() as u64 >= MAX_LINE_BYTES as u64 {
+                    // The `take`-limited read_until exhausted its whole
+                    // limit without finding a `\n`: this line is too long.
+                    *failure_writer.borrow_mut() = Some(StreamFailure::LineTooLong);
+                    return None;
+                }
+                let trimmed: &[u8] = {
+                    let mut end = line_buf.len();
+                    while end > 0 && (line_buf[end - 1] == b'\n' || line_buf[end - 1] == b'\r') {
+                        end -= 1;
+                    }
+                    let mut start = 0;
+                    while start < end && line_buf[start].is_ascii_whitespace() {
+                        start += 1;
+                    }
+                    while end > start && line_buf[end - 1].is_ascii_whitespace() {
+                        end -= 1;
+                    }
+                    &line_buf[start..end]
+                };
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let text = match std::str::from_utf8(trimmed) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        *failure_writer.borrow_mut() = Some(StreamFailure::InvalidUtf8);
+                        return None;
+                    }
+                };
+                if let Ok(value) = serde_json::from_str::<Value>(text) {
+                    return Some(value);
+                }
+                // Unparseable line: skip, same as the JSON path.
             }
         });
         parsers::parse_values(values)
     };
 
-    if let Some(e) = io_error.borrow_mut().take() {
-        return Err(AppError::unprocessable(format!(
-            "failed to inflate gzip envelope: {e}"
-        )));
+    if let Some(failure) = failure.borrow_mut().take() {
+        return Err(AppError::unprocessable(match failure {
+            StreamFailure::Io(e) if e.to_string() == CAP_EXCEEDED_IO_MSG => {
+                "decompressed size cap exceeded".to_string()
+            }
+            StreamFailure::Io(e) => format!("failed to inflate gzip envelope: {e}"),
+            StreamFailure::InvalidUtf8 => "trace is not valid UTF-8".to_string(),
+            StreamFailure::LineTooLong => "line exceeds 32 MB".to_string(),
+        }));
     }
     let stats =
         parse_result.map_err(|e| AppError::unprocessable(format!("trace rejected: {e}")))?;
@@ -386,6 +453,9 @@ pub(crate) async fn analyze_raw(
         match buf_reader.read(&mut sink) {
             Ok(0) => break,
             Ok(_) => {}
+            Err(e) if e.to_string() == CAP_EXCEEDED_IO_MSG => {
+                return Err(AppError::unprocessable("decompressed size cap exceeded"));
+            }
             Err(e) => {
                 return Err(AppError::unprocessable(format!(
                     "failed to inflate gzip envelope: {e}"
@@ -719,6 +789,46 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(status_of(err), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_newline_free_line_over_cap() {
+        let state = raw_test_state();
+        // No newlines at all: a single "line" larger than MAX_LINE_BYTES
+        // would otherwise defeat the O(buffer) memory guarantee. All-zero
+        // bytes compress to almost nothing, so this stays cheap to build.
+        let huge_line = vec![b'0'; MAX_LINE_BYTES + 1024];
+        let gz = gzip(&huge_line);
+        let plaintext = frame("line-bomb", &gz);
+        let body = encrypt_raw(&state, &plaintext);
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_accepts_legit_multi_mb_single_line() {
+        let state = raw_test_state();
+        // A single legitimate JSONL line comfortably over 1MB (well under
+        // the 32MB per-line cap) must still parse successfully.
+        let padding = "x".repeat(1024 * 1024);
+        let line = serde_json::json!({
+            "type": "user",
+            "sessionId": "big-line",
+            "timestamp": "2026-07-10T15:15:45.972Z",
+            "message": {"role": "user", "content": format!("hello {padding}")}
+        })
+        .to_string();
+        assert!(line.len() as u64 > 1024 * 1024);
+        assert!((line.len() as u64) < MAX_LINE_BYTES as u64);
+
+        let gz = gzip(line.as_bytes());
+        let plaintext = frame("big-line-passport", &gz);
+        let body = encrypt_raw(&state, &plaintext);
+        let response = analyze_raw(State(state), body).await.unwrap();
+        assert_eq!(response.0.payload.passport_id, "big-line-passport");
     }
 
     /// Documents and locks in the trailing-garbage semantic described on
