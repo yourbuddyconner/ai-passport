@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   computeVerifiedScore,
   includeGlobalRank,
+  isLastMember,
+  ladderLimitReached,
+  makeInviteCode,
   pickSpotlights,
   rankEntries,
   rankIfListed,
+  validateLadderName,
   type LeaderboardRow,
 } from '../src/ranking'
 import type { SessionRow } from '../src/score'
@@ -131,5 +135,76 @@ describe('rankIfListed', () => {
     expect(rankIfListed(ranked, 100)).toBe(1)
     // Below everyone.
     expect(rankIfListed(ranked, 0)).toBe(5)
+  })
+})
+
+describe('validateLadderName', () => {
+  it('trims whitespace', () => {
+    expect(validateLadderName('  Team Alpha  ')).toBe('Team Alpha')
+  })
+
+  it('rejects empty (post-trim) names', () => {
+    expect(validateLadderName('')).toBeNull()
+    expect(validateLadderName('   ')).toBeNull()
+  })
+
+  it('rejects names over 64 characters', () => {
+    expect(validateLadderName('a'.repeat(64))).toBe('a'.repeat(64))
+    expect(validateLadderName('a'.repeat(65))).toBeNull()
+  })
+
+  it('rejects non-string input', () => {
+    expect(validateLadderName(undefined)).toBeNull()
+    expect(validateLadderName(42)).toBeNull()
+  })
+})
+
+describe('ladderLimitReached', () => {
+  it('is false below the cap of 5', () => {
+    expect(ladderLimitReached(0)).toBe(false)
+    expect(ladderLimitReached(4)).toBe(false)
+  })
+
+  it('is true at and above the cap', () => {
+    expect(ladderLimitReached(5)).toBe(true)
+    expect(ladderLimitReached(6)).toBe(true)
+  })
+})
+
+describe('makeInviteCode', () => {
+  it('produces 32 lowercase hex characters', () => {
+    const code = makeInviteCode()
+    expect(code).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  it('is not deterministic across calls', () => {
+    expect(makeInviteCode()).not.toBe(makeInviteCode())
+  })
+})
+
+describe('isLastMember', () => {
+  it('is true when the pre-leave count is 1 or fewer', () => {
+    expect(isLastMember(1)).toBe(true)
+    expect(isLastMember(0)).toBe(true)
+  })
+
+  it('is false when other members remain after the leave', () => {
+    expect(isLastMember(2)).toBe(false)
+    expect(isLastMember(5)).toBe(false)
+  })
+})
+
+describe('ladder entries + pending (via rankEntries)', () => {
+  it('excludes zero-verified members, leaving them countable as pending', () => {
+    const rows = [
+      ladderRow({ slug: 'verified', sessions: 2, verifiedScore: 40 }),
+      ladderRow({ slug: 'pending-1', sessions: 0, verifiedScore: 0 }),
+      ladderRow({ slug: 'pending-2', sessions: 0, verifiedScore: 0 }),
+    ]
+    const entries = rankEntries(rows)
+    expect(entries.map((e) => e.slug)).toEqual(['verified'])
+    const totalMembers = rows.length
+    const pending = totalMembers - entries.length
+    expect(pending).toBe(2)
   })
 })

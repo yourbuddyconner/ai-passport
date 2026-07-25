@@ -111,3 +111,31 @@ export function rankIfListed(entries: LeaderboardEntry[], hypotheticalScore: num
   const ahead = entries.filter((e) => e.verifiedScore >= hypotheticalScore).length
   return ahead + 1
 }
+
+// ---------- Ladders (pure) ----------
+
+export const LADDER_LIMIT_PER_CREATOR = 5
+
+/** Trims and bounds-checks a ladder name; null means invalid (caller returns 400). */
+export function validateLadderName(name: unknown): string | null {
+  if (typeof name !== 'string') return null
+  const trimmed = name.trim()
+  if (trimmed.length < 1 || trimmed.length > 64) return null
+  return trimmed
+}
+
+/** ≤5 ladders per creator — count is the creator's existing ladder rows. */
+export function ladderLimitReached(existingCount: number): boolean {
+  return existingCount >= LADDER_LIMIT_PER_CREATOR
+}
+
+/** 32 lowercase hex chars from two UUIDs stripped of dashes, truncated. */
+export function makeInviteCode(): string {
+  const raw = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '')
+  return raw.slice(0, 32)
+}
+
+/** True when the leaver was the last member — caller then deletes the ladder row too. */
+export function isLastMember(memberCountBeforeLeave: number): boolean {
+  return memberCountBeforeLeave <= 1
+}

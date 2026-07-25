@@ -3,10 +3,14 @@ import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
 import {
   includeGlobalRank,
+  isLastMember,
+  ladderLimitReached,
+  makeInviteCode,
   pickSpotlights,
   rankEntries,
   rankIfListed,
   recomputeVerifiedScore,
+  validateLadderName,
   type LeaderboardRow,
 } from './ranking'
 import {
@@ -690,6 +694,157 @@ app.get('/api/leaderboard', async (c) => {
       concludedSessions: e.concludedSessions,
     })),
     spotlights,
+  })
+})
+
+// ---------- Ladders ----------
+
+// Members with ≥1 enclave-verified session, ranked the same way the global
+// leaderboard is (see LEADERBOARD_QUERY) — LEFT JOIN so zero-session members
+// still surface a row (sessions = 0), which rankEntries then filters out,
+// letting the caller derive `pending` from the difference.
+const LADDER_MEMBERS_QUERY = `
+  SELECT p.slug AS slug, p.name AS name, p.verified_score AS verifiedScore,
+         p.created_at AS createdAt, COUNT(s.id) AS sessions,
+         COALESCE(SUM(s.loc_added), 0) AS locAdded,
+         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions
+  FROM ladder_members lm
+  JOIN passports p ON p.id = lm.passport_id
+  LEFT JOIN sessions s ON s.passport_id = p.id AND s.verification = 'enclave'
+  WHERE lm.ladder_id = ?
+  GROUP BY p.id
+  ORDER BY p.verified_score DESC, p.created_at ASC
+`
+
+app.post('/api/ladders', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const passportId = typeof body?.passportId === 'string' ? body.passportId : ''
+  if (!passportId) return c.json({ error: 'passportId is required' }, 400)
+  const auth = await authorizePassport(c, passportId)
+  if (auth instanceof Response) return auth
+
+  const name = validateLadderName(body?.name)
+  if (!name) return c.json({ error: 'name must be 1-64 characters' }, 400)
+
+  const existingCount = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM ladders WHERE created_by = ?',
+  )
+    .bind(passportId)
+    .first<{ count: number }>()
+  if (ladderLimitReached(existingCount?.count ?? 0))
+    return c.json({ error: 'ladder limit reached (5)' }, 400)
+
+  const id = crypto.randomUUID()
+  const slug = makeSlug()
+  const inviteCode = makeInviteCode()
+  const now = new Date().toISOString()
+  await c.env.DB.prepare(
+    'INSERT INTO ladders (id, slug, invite_code, name, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+    .bind(id, slug, inviteCode, name, passportId, now)
+    .run()
+  await c.env.DB.prepare(
+    'INSERT INTO ladder_members (ladder_id, passport_id, joined_at) VALUES (?, ?, ?)',
+  )
+    .bind(id, passportId, now)
+    .run()
+  return c.json({ id, slug, inviteCode }, 201)
+})
+
+app.post('/api/ladders/:slug/join', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const passportId = typeof body?.passportId === 'string' ? body.passportId : ''
+  if (!passportId) return c.json({ error: 'passportId is required' }, 400)
+  const auth = await authorizePassport(c, passportId)
+  if (auth instanceof Response) return auth
+
+  const ladder = await c.env.DB.prepare(
+    'SELECT id, invite_code FROM ladders WHERE slug = ?',
+  )
+    .bind(c.req.param('slug'))
+    .first<{ id: string; invite_code: string }>()
+  if (!ladder) return c.json({ error: 'ladder not found' }, 404)
+
+  const inviteCode = typeof body?.inviteCode === 'string' ? body.inviteCode : ''
+  if (inviteCode !== ladder.invite_code) return c.json({ error: 'invalid invite code' }, 403)
+
+  // INSERT OR IGNORE keeps this idempotent: already-member re-joins 200, no
+  // duplicate row (ladder_members has a composite primary key).
+  await c.env.DB.prepare(
+    'INSERT OR IGNORE INTO ladder_members (ladder_id, passport_id, joined_at) VALUES (?, ?, ?)',
+  )
+    .bind(ladder.id, passportId, new Date().toISOString())
+    .run()
+  return c.json({ joined: true })
+})
+
+app.delete('/api/ladders/:slug/membership', async (c) => {
+  const body = await c.req.json().catch(() => null)
+  const passportId = typeof body?.passportId === 'string' ? body.passportId : ''
+  if (!passportId) return c.json({ error: 'passportId is required' }, 400)
+  const auth = await authorizePassport(c, passportId)
+  if (auth instanceof Response) return auth
+
+  const ladder = await c.env.DB.prepare('SELECT id FROM ladders WHERE slug = ?')
+    .bind(c.req.param('slug'))
+    .first<{ id: string }>()
+  if (!ladder) return c.json({ error: 'ladder not found' }, 404)
+
+  const membership = await c.env.DB.prepare(
+    'SELECT 1 FROM ladder_members WHERE ladder_id = ? AND passport_id = ?',
+  )
+    .bind(ladder.id, passportId)
+    .first()
+  if (!membership) return c.json({ error: 'not a member of this ladder' }, 404)
+
+  const memberCount = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM ladder_members WHERE ladder_id = ?',
+  )
+    .bind(ladder.id)
+    .first<{ count: number }>()
+
+  await c.env.DB.prepare(
+    'DELETE FROM ladder_members WHERE ladder_id = ? AND passport_id = ?',
+  )
+    .bind(ladder.id, passportId)
+    .run()
+
+  if (isLastMember(memberCount?.count ?? 0)) {
+    await c.env.DB.prepare('DELETE FROM ladders WHERE id = ?').bind(ladder.id).run()
+  }
+  return c.json({ left: true })
+})
+
+app.get('/api/ladders/:slug', async (c) => {
+  const ladder = await c.env.DB.prepare('SELECT id, name FROM ladders WHERE slug = ?')
+    .bind(c.req.param('slug'))
+    .first<{ id: string; name: string }>()
+  if (!ladder) return c.json({ error: 'ladder not found' }, 404)
+
+  const [{ results }, memberCount] = await Promise.all([
+    c.env.DB.prepare(LADDER_MEMBERS_QUERY).bind(ladder.id).all<LeaderboardRow>(),
+    c.env.DB.prepare('SELECT COUNT(*) as count FROM ladder_members WHERE ladder_id = ?')
+      .bind(ladder.id)
+      .first<{ count: number }>(),
+  ])
+  const entries = rankEntries(results ?? [])
+  const totalMembers = memberCount?.count ?? 0
+  const pending = totalMembers - entries.length
+
+  return c.json({
+    name: ladder.name,
+    total: entries.length,
+    pending,
+    entries: entries.map((e) => ({
+      rank: e.rank,
+      slug: e.slug,
+      name: e.name,
+      grade: e.grade,
+      verifiedScore: e.verifiedScore,
+      sessions: e.sessions,
+      locAdded: e.locAdded,
+      concludedSessions: e.concludedSessions,
+    })),
   })
 })
 
