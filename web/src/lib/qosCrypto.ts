@@ -53,6 +53,22 @@ export async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
+ * Binary framing for the raw upload path: u16-LE byte-length of the utf8
+ * passport id, then the utf8 passport id bytes, then the gzip bytes. This
+ * whole envelope is what gets ECIES-encrypted — passport binding travels
+ * inside the ciphertext instead of a JSON wrapper.
+ */
+export function buildBinaryEnvelope(passportId: string, gzBytes: Uint8Array): Uint8Array {
+  const idBytes = new TextEncoder().encode(passportId)
+  if (idBytes.length > 0xffff) {
+    throw new Error(`passport id too long for binary envelope: ${idBytes.length} bytes`)
+  }
+  const lenLe = new Uint8Array(2)
+  new DataView(lenLe.buffer).setUint16(0, idBytes.length, true)
+  return concat(lenLe, idBytes, gzBytes)
+}
+
+/**
  * Encrypt `message` to a qos_p256 dual public key (130 bytes hex).
  * Returns the raw borsh envelope bytes that `P256Pair::decrypt` accepts.
  */

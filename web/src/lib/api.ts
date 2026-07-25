@@ -1,7 +1,8 @@
-import { bytesToBase64, encryptToQuorumKeyRaw, gzipBytes } from './qosCrypto'
+import { buildBinaryEnvelope, encryptToQuorumKeyRaw, gzipBytes } from './qosCrypto'
+import { canonicalizeTrace } from './canonicalize'
 
-const MAX_UPLOAD_BYTES = 128 * 1024 * 1024
-const MAX_CIPHERTEXT_B64_LENGTH = 30 * 1024 * 1024
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+const MAX_CIPHERTEXT_BYTES = 64 * 1024 * 1024
 const MAX_PLAINTEXT_BYTES = 25 * 1024 * 1024
 
 export interface PassportCredentials {
@@ -137,21 +138,20 @@ export async function uploadTrace(
   file: File,
 ): Promise<UploadResult> {
   if (file.size > MAX_UPLOAD_BYTES) {
-    return { fileName: file.name, ok: false, error: 'trace exceeds the 128 MB limit' }
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
   }
-  const text = await file.text()
+  const text = canonicalizeTrace(await file.text())
 
-  // End-to-end encryption: seal {passport_id, trace} to the enclave's quorum
-  // key right here in the browser. The server only ever sees ciphertext.
-  // Falls back to plaintext upload when no verifier is configured.
+  // End-to-end encryption: seal the raw trace to the enclave's quorum key
+  // right here in the browser, with the passport id bound inside a binary
+  // envelope. The server only ever sees ciphertext. Falls back to plaintext
+  // upload when no verifier is configured.
   const quorumKey = await getQuorumKey()
   let res: Response
   if (quorumKey) {
-    const envelope = JSON.stringify({ passport_id: creds.id, trace: text })
-    const compressed = await gzipBytes(new TextEncoder().encode(envelope))
-    const ciphertext = await encryptToQuorumKeyRaw(quorumKey, compressed)
-    const ciphertextB64 = bytesToBase64(ciphertext)
-    if (ciphertextB64.length > MAX_CIPHERTEXT_B64_LENGTH) {
+    const gz = await gzipBytes(new TextEncoder().encode(text))
+    const raw = await encryptToQuorumKeyRaw(quorumKey, buildBinaryEnvelope(creds.id, gz))
+    if (raw.byteLength > MAX_CIPHERTEXT_BYTES) {
       return {
         fileName: file.name,
         ok: false,
@@ -160,8 +160,8 @@ export async function uploadTrace(
     }
     res = await fetch(`/api/passports/${creds.id}/sessions`, {
       method: 'POST',
-      headers: { 'x-edit-token': creds.editToken, 'content-type': 'application/json' },
-      body: JSON.stringify({ ciphertextB64 }),
+      headers: { 'x-edit-token': creds.editToken, 'content-type': 'application/octet-stream' },
+      body: raw as BodyInit,
     })
   } else {
     if (text.length > MAX_PLAINTEXT_BYTES) {
@@ -245,17 +245,15 @@ export async function submitOnboarding(displayName: string, title: string): Prom
 /** Upload for a passkey-authenticated owner (session cookie, no edit token). */
 export async function uploadTraceAsOwner(passportId: string, file: File): Promise<UploadResult> {
   if (file.size > MAX_UPLOAD_BYTES) {
-    return { fileName: file.name, ok: false, error: 'trace exceeds the 128 MB limit' }
+    return { fileName: file.name, ok: false, error: 'trace exceeds the 256 MB limit' }
   }
-  const text = await file.text()
+  const text = canonicalizeTrace(await file.text())
   const quorumKey = await getQuorumKey()
   let res: Response
   if (quorumKey) {
-    const envelope = JSON.stringify({ passport_id: passportId, trace: text })
-    const compressed = await gzipBytes(new TextEncoder().encode(envelope))
-    const ciphertext = await encryptToQuorumKeyRaw(quorumKey, compressed)
-    const ciphertextB64 = bytesToBase64(ciphertext)
-    if (ciphertextB64.length > MAX_CIPHERTEXT_B64_LENGTH) {
+    const gz = await gzipBytes(new TextEncoder().encode(text))
+    const raw = await encryptToQuorumKeyRaw(quorumKey, buildBinaryEnvelope(passportId, gz))
+    if (raw.byteLength > MAX_CIPHERTEXT_BYTES) {
       return {
         fileName: file.name,
         ok: false,
@@ -264,8 +262,8 @@ export async function uploadTraceAsOwner(passportId: string, file: File): Promis
     }
     res = await fetch(`/api/passports/${passportId}/sessions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ciphertextB64 }),
+      headers: { 'content-type': 'application/octet-stream' },
+      body: raw as BodyInit,
     })
   } else {
     if (text.length > MAX_PLAINTEXT_BYTES) {
