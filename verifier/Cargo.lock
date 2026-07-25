@@ -629,7 +629,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "e2e"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "assert_cmd",
  "base64",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "metrics"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "passport-verifier"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "axum",
  "base64",

@@ -68,6 +68,37 @@ async fn post_analyze(
         .unwrap()
 }
 
+/// Binary framing for `/analyze_raw` (mirrors `buildBinaryEnvelope` in
+/// `web/src/lib/qosCrypto.ts`): u16-LE byte-length of the utf8 passport id,
+/// the passport id bytes, then the gzip payload.
+fn frame_raw_envelope(passport_id: &str, gz: &[u8]) -> Vec<u8> {
+    let id_bytes = passport_id.as_bytes();
+    let mut out = Vec::new();
+    out.extend_from_slice(&u16::try_from(id_bytes.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(id_bytes);
+    out.extend_from_slice(gz);
+    out
+}
+
+/// Post a raw binary-framed envelope (already gzip-compressed trace, framed
+/// with `frame_raw_envelope`), encrypted to the enclave's quorum key, to
+/// `/analyze_raw` as `application/octet-stream` -- no JSON wrapper.
+async fn post_analyze_raw(
+    client: &reqwest::Client,
+    base_url: &str,
+    quorum_public: &P256Public,
+    plaintext: &[u8],
+) -> reqwest::Response {
+    let ciphertext = quorum_public.encrypt(plaintext).unwrap();
+    client
+        .post(format!("{base_url}/analyze_raw"))
+        .header("content-type", "application/octet-stream")
+        .body(ciphertext)
+        .send()
+        .await
+        .unwrap()
+}
+
 async fn fetch_quorum_public_key(client: &reqwest::Client, base_url: &str) -> P256Public {
     let resp = client
         .get(format!("{base_url}/quorum_public_key"))
@@ -380,6 +411,100 @@ async fn test_analyze_gzip_bomb_rejected() {
             CiphertextField::Hex,
         )
         .await;
+        assert_eq!(resp.status(), 422);
+    }
+    e2e::Builder::new().execute(test).await;
+}
+
+#[tokio::test]
+async fn test_analyze_raw_matches_json_path_and_verifies_signature() {
+    async fn test(test_args: TestArgs) {
+        let client = reqwest::Client::new();
+        let quorum_public = fetch_quorum_public_key(&client, &test_args.base_url).await;
+
+        let envelope =
+            serde_json::json!({ "passport_id": "e2e-raw-passport", "trace": sample_trace() })
+                .to_string();
+        let json_resp = post_analyze(
+            &client,
+            &test_args.base_url,
+            &quorum_public,
+            envelope.as_bytes(),
+            CiphertextField::Hex,
+        )
+        .await;
+        assert_eq!(json_resp.status(), 200);
+        let json_json: serde_json::Value = json_resp.json().await.unwrap();
+
+        let framed = frame_raw_envelope("e2e-raw-passport", &gzip(sample_trace().as_bytes()));
+        let raw_resp =
+            post_analyze_raw(&client, &test_args.base_url, &quorum_public, &framed).await;
+        assert_eq!(raw_resp.status(), 200);
+        let raw_json: serde_json::Value = raw_resp.json().await.unwrap();
+
+        // Verify the ECDSA signature over the exact returned payload bytes.
+        let payload = raw_json["proof"]["payload"].as_str().unwrap();
+        let public_key = P256Public::from_bytes(
+            &qos_hex::decode(raw_json["proof"]["public_key"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let signature = qos_hex::decode(raw_json["proof"]["signature"].as_str().unwrap()).unwrap();
+        public_key.verify(payload.as_bytes(), &signature).unwrap();
+
+        let signed: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(signed["passport_id"], "e2e-raw-passport");
+
+        // Same trace via /analyze (JSON) and /analyze_raw (binary streaming)
+        // must produce identical stats and trace hash.
+        let json_payload: serde_json::Value =
+            serde_json::from_str(json_json["proof"]["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(json_payload["trace_sha256"], signed["trace_sha256"]);
+        assert_eq!(json_payload["stats"], signed["stats"]);
+    }
+    e2e::Builder::new().execute(test).await;
+}
+
+#[tokio::test]
+async fn test_analyze_raw_rejects_framing_corruption() {
+    async fn test(test_args: TestArgs) {
+        let client = reqwest::Client::new();
+        let quorum_public = fetch_quorum_public_key(&client, &test_args.base_url).await;
+
+        // Truncated length prefix (only 1 byte, need >= 2).
+        let resp =
+            post_analyze_raw(&client, &test_args.base_url, &quorum_public, &[0x01]).await;
+        assert_eq!(resp.status(), 400);
+
+        // Length prefix claims more bytes than are present.
+        let mut oob = 10u16.to_le_bytes().to_vec();
+        oob.push(b'x');
+        let resp = post_analyze_raw(&client, &test_args.base_url, &quorum_public, &oob).await;
+        assert_eq!(resp.status(), 400);
+
+        // Invalid utf8 passport id.
+        let mut bad_utf8 = 2u16.to_le_bytes().to_vec();
+        bad_utf8.extend_from_slice(&[0xff, 0xfe]);
+        bad_utf8.extend_from_slice(&gzip(sample_trace().as_bytes()));
+        let resp = post_analyze_raw(&client, &test_args.base_url, &quorum_public, &bad_utf8).await;
+        assert_eq!(resp.status(), 400);
+
+        // Missing gzip magic after the passport id.
+        let no_magic = frame_raw_envelope("e2e-raw-bad", b"not gzip data");
+        let resp =
+            post_analyze_raw(&client, &test_args.base_url, &quorum_public, &no_magic).await;
+        assert_eq!(resp.status(), 400);
+    }
+    e2e::Builder::new().execute(test).await;
+}
+
+#[tokio::test]
+async fn test_analyze_raw_gzip_bomb_rejected() {
+    async fn test(test_args: TestArgs) {
+        let client = reqwest::Client::new();
+        let quorum_public = fetch_quorum_public_key(&client, &test_args.base_url).await;
+
+        let framed = frame_raw_envelope("e2e-raw-bomb", &oversized_gzip_payload());
+        let resp = post_analyze_raw(&client, &test_args.base_url, &quorum_public, &framed).await;
         assert_eq!(resp.status(), 422);
     }
     e2e::Builder::new().execute(test).await;

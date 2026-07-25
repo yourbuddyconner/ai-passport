@@ -8,12 +8,15 @@
 //! `GET /quorum_public_key` exposes the public key clients encrypt to.
 
 use crate::{parsers, response::AppError, state::AppState};
-use axum::{Json, extract::State};
+use axum::{Json, body::Bytes, extract::State};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::cell::RefCell;
+use std::io::{self, BufRead, BufReader, Read};
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// gzip magic bytes: envelopes compressed by newer clients start with these.
@@ -105,6 +108,14 @@ fn maybe_inflate(plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
                 "gzip envelope exceeds decompressed size cap",
             ));
         }
+        // Reserve exactly the space this chunk needs instead of letting
+        // `extend_from_slice` fall back to `Vec`'s amortized-doubling growth
+        // when capacity runs out. Doubling growth near the cap can reserve
+        // up to ~2x the cap's worth of memory before the length check above
+        // ever gets a chance to bail on the *next* chunk — `reserve_exact`
+        // bounds each growth step to this chunk's size (<= 1 MB), so peak
+        // memory stays within one chunk of the cap rather than up to 2x it.
+        inflated.reserve_exact(n);
         inflated.extend_from_slice(&buf[..n]);
     }
     Ok(inflated)
@@ -182,6 +193,216 @@ pub(crate) async fn analyze(
 
     let payload = AnalyzePayload {
         passport_id: envelope.passport_id,
+        trace_sha256,
+        stats,
+        analyzed_at,
+    };
+
+    let payload_bytes = qos_json::to_vec(&payload)
+        .map_err(|e| AppError::internal(format!("failed to serialize proof payload: {e}")))?;
+    let signature = state
+        .ephemeral_key
+        .sign(&payload_bytes)
+        .map_err(|e| AppError::internal(format!("failed to sign proof payload: {e:?}")))?;
+    let payload_string = String::from_utf8(payload_bytes)
+        .map_err(|e| AppError::internal(format!("failed to encode proof payload: {e}")))?;
+
+    Ok(Json(AnalyzeResponse {
+        payload,
+        proof: AppProof {
+            public_key: state.ephemeral_key.public_key().to_bytes(),
+            payload: payload_string,
+            signature,
+        },
+    }))
+}
+
+/// A `Read` adapter over the inflating gzip stream that (a) caps total bytes
+/// produced at [`GZIP_DECOMPRESSED_CAP`] — the same zip-bomb protection
+/// `maybe_inflate` gives the JSON path — and (b) feeds every produced byte
+/// into a running SHA-256 hash, so `trace_sha256` never requires buffering
+/// the inflated trace anywhere.
+struct HashingCappedReader<R> {
+    inner: R,
+    hasher: Sha256,
+    total: u64,
+}
+
+impl<R: Read> HashingCappedReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            total: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for HashingCappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 {
+            return Ok(0);
+        }
+        self.total += n as u64;
+        if self.total > GZIP_DECOMPRESSED_CAP {
+            return Err(io::Error::other(
+                "gzip envelope exceeds decompressed size cap",
+            ));
+        }
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+/// Parse the raw binary envelope framing (see `web/src/lib/qosCrypto.ts`
+/// `buildBinaryEnvelope`): a u16-LE byte-length of the utf8 `passport_id`,
+/// the `passport_id` bytes themselves, then the gzip payload. Returns the
+/// passport id and a slice of `plaintext` covering just the gzip bytes.
+fn parse_raw_framing(plaintext: &[u8]) -> Result<(String, &[u8]), AppError> {
+    if plaintext.len() < 2 {
+        return Err(AppError::bad_request(
+            "envelope too short for passport_id length prefix",
+        ));
+    }
+    let id_len = u16::from_le_bytes([plaintext[0], plaintext[1]]) as usize;
+    let rest = &plaintext[2..];
+    if id_len > rest.len() {
+        return Err(AppError::bad_request(
+            "passport_id length exceeds envelope size",
+        ));
+    }
+    let (id_bytes, gz) = rest.split_at(id_len);
+    let passport_id = std::str::from_utf8(id_bytes)
+        .map_err(|e| AppError::bad_request(format!("passport_id is not valid utf8: {e}")))?
+        .to_string();
+    if passport_id.is_empty() {
+        return Err(AppError::bad_request("passport_id is required"));
+    }
+    if gz.len() < 2 || gz[..2] != GZIP_MAGIC {
+        return Err(AppError::bad_request(
+            "expected gzip magic bytes after passport_id",
+        ));
+    }
+    Ok((passport_id, gz))
+}
+
+/// `POST /analyze_raw`: the streaming counterpart to `/analyze`. The request
+/// body is the raw quorum-key ciphertext (no JSON wrapper, no hex/base64
+/// re-encoding); the decrypted plaintext is the binary envelope described in
+/// [`parse_raw_framing`], carrying a gzip-compressed raw JSONL trace instead
+/// of a JSON `{passport_id, trace}` object.
+///
+/// Memory discipline is the entire point of this endpoint: unlike `/analyze`,
+/// there is no full-trace `String` and no unbounded `Vec` anywhere in this
+/// pipeline. The gzip payload is inflated through a chain of `Read` adapters
+/// — `GzDecoder` -> [`HashingCappedReader`] (caps size, hashes as it goes) ->
+/// `BufReader::lines()` -- and each line is parsed into a `Value` and handed
+/// straight to the harness parser, mirroring [`parsers::parsed_lines`]'s
+/// line handling (trim, skip blank/unparseable lines) exactly.
+///
+/// Trailing-data semantics: any bytes after the last newline that fail to
+/// parse as JSON are silently skipped, same as every other line — this
+/// endpoint does not distinguish "trailing garbage" from "one bad line in
+/// the middle" (see the tests below for `analyze_raw_ignores_trailing_garbage_but_still_hashes_it`).
+/// Those bytes are still read through the hashing reader and are still
+/// included in `trace_sha256`, since the hash commits to every byte of the
+/// inflated stream, not just the bytes that happened to parse.
+pub(crate) async fn analyze_raw(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<AnalyzeResponse>, AppError> {
+    let ciphertext = body.to_vec();
+    drop(body);
+
+    let plaintext = state
+        .quorum_key
+        .decrypt(&ciphertext)
+        .map_err(|e| AppError::bad_request(format!("failed to decrypt ciphertext: {e:?}")))?;
+    drop(ciphertext);
+
+    let (passport_id, gz) = parse_raw_framing(&plaintext)?;
+
+    let cap_reader = HashingCappedReader::new(GzDecoder::new(gz));
+    let mut buf_reader = BufReader::new(cap_reader);
+
+    // Shared with the `from_fn` iterator below: `BufRead::lines()` does not
+    // stop iterating on its own after an `io::Error` (it just returns
+    // `Some(Err(..))` for that call and can be polled again), so this can't
+    // be handled with a `filter_map` that quietly maps errors to `None` --
+    // that would poll the errored reader forever. Instead the adapter below
+    // latches the first IO error here and stops producing values for good.
+    let io_error: Rc<RefCell<Option<io::Error>>> = Rc::new(RefCell::new(None));
+    let io_error_writer = Rc::clone(&io_error);
+
+    let parse_result = {
+        let mut lines = (&mut buf_reader).lines();
+        // Mirrors `parsers::parsed_lines`: trim each line, silently skip
+        // ones that don't parse as JSON (blank lines, trailing garbage,
+        // the odd corrupt line).
+        let values = std::iter::from_fn(move || {
+            loop {
+                if io_error_writer.borrow().is_some() {
+                    return None;
+                }
+                match lines.next() {
+                    None => return None,
+                    Some(Err(e)) => {
+                        *io_error_writer.borrow_mut() = Some(e);
+                        return None;
+                    }
+                    Some(Ok(line)) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+                            return Some(value);
+                        }
+                        // Unparseable line: skip, same as the JSON path.
+                    }
+                }
+            }
+        });
+        parsers::parse_values(values)
+    };
+
+    if let Some(e) = io_error.borrow_mut().take() {
+        return Err(AppError::unprocessable(format!(
+            "failed to inflate gzip envelope: {e}"
+        )));
+    }
+    let stats =
+        parse_result.map_err(|e| AppError::unprocessable(format!("trace rejected: {e}")))?;
+
+    // The parser may not have consumed every byte of the stream (e.g. it
+    // could in principle stop early), so drain to EOF through a small fixed
+    // buffer before finalizing the hash -- this guarantees `trace_sha256`
+    // commits to every inflated byte, including any trailing data after the
+    // parser's last consumed line, not just the bytes the parser happened
+    // to read.
+    let mut sink = [0u8; 64 * 1024];
+    loop {
+        match buf_reader.read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                return Err(AppError::unprocessable(format!(
+                    "failed to inflate gzip envelope: {e}"
+                )));
+            }
+        }
+    }
+    let cap_reader = buf_reader.into_inner();
+    let trace_sha256 = qos_hex::encode(&cap_reader.hasher.finalize());
+
+    let analyzed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| AppError::internal(format!("system clock error: {e}")))?
+        .as_secs();
+
+    let payload = AnalyzePayload {
+        passport_id,
         trace_sha256,
         stats,
         analyzed_at,
@@ -341,6 +562,185 @@ mod tests {
         assert_eq!(
             decode_ciphertext(&b64_only).unwrap(),
             vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    // --- /analyze_raw ---
+
+    fn raw_test_state() -> AppState {
+        let ephemeral_key = qos_p256::P256Pair::generate().unwrap();
+        let quorum_key = qos_p256::P256Pair::generate().unwrap();
+        AppState::new(ephemeral_key, quorum_key)
+    }
+
+    /// Build the binary envelope framing (mirrors `buildBinaryEnvelope` in
+    /// `web/src/lib/qosCrypto.ts`): u16-LE passport_id length, passport_id
+    /// bytes, then the gzip payload.
+    fn frame(passport_id: &str, gz: &[u8]) -> Vec<u8> {
+        let id_bytes = passport_id.as_bytes();
+        let mut out = Vec::new();
+        out.extend_from_slice(&(u16::try_from(id_bytes.len()).unwrap()).to_le_bytes());
+        out.extend_from_slice(id_bytes);
+        out.extend_from_slice(gz);
+        out
+    }
+
+    fn encrypt_raw(state: &AppState, plaintext: &[u8]) -> axum::body::Bytes {
+        let ciphertext = state.quorum_key.public_key().encrypt(plaintext).unwrap();
+        axum::body::Bytes::from(ciphertext)
+    }
+
+    fn sample_trace() -> &'static str {
+        concat!(
+            r#"{"type":"user","sessionId":"raw-test","timestamp":"2026-07-10T15:15:45.972Z","message":{"role":"user","content":"hello"}}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"raw-test","timestamp":"2026-07-10T15:16:00.000Z","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":250},"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status"}}]}}"#,
+        )
+    }
+
+    fn status_of(err: AppError) -> axum::http::StatusCode {
+        use axum::response::IntoResponse;
+        err.into_response().status()
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_matches_json_path_stats_and_hash() {
+        let json_state = raw_test_state();
+        let json_envelope =
+            serde_json::json!({ "passport_id": "raw-parity", "trace": sample_trace() });
+        let json_ciphertext = json_state
+            .quorum_key
+            .public_key()
+            .encrypt(json_envelope.to_string().as_bytes())
+            .unwrap();
+        let json_response = analyze(
+            State(json_state.clone()),
+            Json(AnalyzeRequest {
+                ciphertext: Some(qos_hex::encode(&json_ciphertext)),
+                ciphertext_b64: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let raw_state = raw_test_state();
+        let gz = gzip(sample_trace().as_bytes());
+        let plaintext = frame("raw-parity", &gz);
+        let body = encrypt_raw(&raw_state, &plaintext);
+        let raw_response = analyze_raw(State(raw_state), body).await.unwrap();
+
+        // Different enclave keys per state, so compare the meaningful
+        // subset rather than the full signed payload.
+        assert_eq!(
+            raw_response.0.payload.trace_sha256,
+            qos_hex::encode(&Sha256::digest(sample_trace().as_bytes()))
+        );
+        assert_eq!(
+            json_response.0.payload.trace_sha256,
+            raw_response.0.payload.trace_sha256,
+            "raw and JSON paths must hash the same inflated trace bytes identically"
+        );
+        assert_eq!(
+            qos_json::to_vec(&json_response.0.payload.stats).unwrap(),
+            qos_json::to_vec(&raw_response.0.payload.stats).unwrap(),
+            "raw and JSON paths must produce identical stats for the same trace"
+        );
+        assert_eq!(raw_response.0.payload.passport_id, "raw-parity");
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_truncated_length_prefix() {
+        let state = raw_test_state();
+        let body = encrypt_raw(&state, &[0x01]); // 1 byte, need >= 2
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_length_out_of_bounds() {
+        let state = raw_test_state();
+        // Claims a 10-byte passport_id but only 1 byte follows.
+        let mut plaintext = 10u16.to_le_bytes().to_vec();
+        plaintext.push(b'x');
+        let body = encrypt_raw(&state, &plaintext);
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_invalid_utf8_passport_id() {
+        let state = raw_test_state();
+        let id_bytes: [u8; 2] = [0xff, 0xfe]; // not valid utf8
+        let mut plaintext = 2u16.to_le_bytes().to_vec();
+        plaintext.extend_from_slice(&id_bytes);
+        plaintext.extend_from_slice(&gzip(sample_trace().as_bytes()));
+        let body = encrypt_raw(&state, &plaintext);
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_missing_gzip_magic() {
+        let state = raw_test_state();
+        let plaintext = frame("no-gzip", b"not gzip data");
+        let body = encrypt_raw(&state, &plaintext);
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn analyze_raw_rejects_stream_past_cap() {
+        let state = raw_test_state();
+        // Highly compressible input that inflates well past the 192MB cap;
+        // cheap to build and ship since it's all zeroes.
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        let chunk = vec![0u8; 1024 * 1024];
+        let cap_chunks = (GZIP_DECOMPRESSED_CAP / chunk.len() as u64) + 8;
+        for _ in 0..cap_chunks {
+            encoder.write_all(&chunk).unwrap();
+        }
+        let gz = encoder.finish().unwrap();
+        let plaintext = frame("bomb", &gz);
+        let body = encrypt_raw(&state, &plaintext);
+        let err = match analyze_raw(State(state), body).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert_eq!(status_of(err), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Documents and locks in the trailing-garbage semantic described on
+    /// [`analyze_raw`]'s doc comment: bytes after the trace's final newline
+    /// that don't parse as JSON are silently skipped (same as any other
+    /// unparseable line), but are still read through the hashing reader and
+    /// still count toward `trace_sha256` -- the hash commits to every
+    /// inflated byte, not just the ones the parser consumed.
+    #[tokio::test]
+    async fn analyze_raw_ignores_trailing_garbage_but_still_hashes_it() {
+        let state = raw_test_state();
+        let mut inflated = sample_trace().as_bytes().to_vec();
+        inflated.extend_from_slice(b"\nnot json, trailing garbage with no newline");
+        let gz = gzip(&inflated);
+        let plaintext = frame("trailing-garbage", &gz);
+        let body = encrypt_raw(&state, &plaintext);
+        let response = analyze_raw(State(state), body).await.unwrap();
+
+        assert_eq!(
+            response.0.payload.trace_sha256,
+            qos_hex::encode(&Sha256::digest(&inflated)),
+            "trace_sha256 must cover the trailing garbage bytes too"
         );
     }
 }

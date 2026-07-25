@@ -1,7 +1,7 @@
 //! Router for the Hello World REST server
 use crate::handlers::{
-    analyze, echo, health, hello_world, quorum_key_decrypt, quorum_key_encrypt, quorum_public_key,
-    random_app_proof, time,
+    analyze, analyze_raw, echo, health, hello_world, quorum_key_decrypt, quorum_key_encrypt,
+    quorum_public_key, random_app_proof, time,
 };
 use axum::{
     Router,
@@ -21,6 +21,19 @@ pub fn router_with_state(state: AppState) -> Router {
         .route("/time", get(time))
         .route("/echo", post(echo))
         .route("/analyze", post(analyze))
+        .route(
+            "/analyze_raw",
+            post(analyze_raw)
+                // Raw uploads arrive as gzip-compressed binary ciphertext,
+                // not hex/base64-inflated JSON, so the per-request cap can
+                // be generous (96 MB) without changing the effective trace
+                // size limit: the 192 MB decompressed cap and the streaming
+                // pipeline's memory discipline are what actually bound this
+                // endpoint, not the wire size. Layered directly on this
+                // route (rather than the whole router) so every other route
+                // keeps the 64 MB default below.
+                .layer(DefaultBodyLimit::max(96 * 1024 * 1024)),
+        )
         .route("/quorum_public_key", get(quorum_public_key))
         .route("/random_app_proof", get(random_app_proof))
         .route("/quorum_key/encrypt", post(quorum_key_encrypt))

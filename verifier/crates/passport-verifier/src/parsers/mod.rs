@@ -139,16 +139,31 @@ fn parsed_lines(text: &str) -> impl Iterator<Item = Value> + '_ {
 /// tens of megabytes of JSONL, and a `Vec<Value>` of every line multiplies
 /// that several times over.
 pub fn parse_trace(text: &str) -> Result<SessionStats, ParseError> {
-    let head: Vec<Value> = parsed_lines(text).take(10).collect();
+    parse_values(parsed_lines(text))
+}
+
+/// Parse a raw JSONL trace supplied as an iterator of already-decoded JSON
+/// values, auto-detecting the harness. This is what [`parse_trace`] delegates
+/// to, and it's also the entry point the streaming `/analyze_raw` path uses
+/// directly: its values come from a line-by-line `Read` adapter over an
+/// inflating gzip stream rather than from a `&str`, so there is never a
+/// point where the full trace text exists as one `String` or `Vec<Value>`.
+///
+/// Same two-pass shape as [`parse_trace`]: sniff the harness from the first
+/// 10 values (buffered into a small `Vec`), then feed the *full* stream
+/// (those 10 values chained with the rest of the iterator) through that
+/// harness's parser.
+pub fn parse_values(mut lines: impl Iterator<Item = Value>) -> Result<SessionStats, ParseError> {
+    let head: Vec<Value> = (&mut lines).take(10).collect();
 
     if head.is_empty() {
         return Err(ParseError("File is not valid JSONL".to_string()));
     }
 
     if claude_code::looks_like(&head) {
-        claude_code::parse(parsed_lines(text))
+        claude_code::parse(head.into_iter().chain(lines))
     } else if codex::looks_like(&head) {
-        codex::parse(parsed_lines(text))
+        codex::parse(head.into_iter().chain(lines))
     } else {
         Err(ParseError(
             "Unrecognized trace format (expected Claude Code or Codex JSONL)".to_string(),
