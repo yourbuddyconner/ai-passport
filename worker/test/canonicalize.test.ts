@@ -183,4 +183,17 @@ describe('canonicalizeTrace', () => {
     expect(canonicalizeTrace(withNL).endsWith('\n')).toBe(true)
     expect(canonicalizeTrace(withoutNL).endsWith('\n')).toBe(false)
   })
+
+  it('passes untouched JSON lines through byte-identical', () => {
+    const line = '{"type":"user","sessionId":"s","text":"caf\\u00e9","num":1.50,"big":123456789012345678901}'
+    expect(canonicalizeTrace(line)).toBe(line)
+  })
+
+  it('rewrites only lines that were actually stripped', () => {
+    const keep = '{"type":"assistant","sessionId":"s","message":{"content":[{"type":"text","text":"hi"}]},"num":2.50}'
+    const strip = '{"type":"compacted","timestamp":"2026-01-01T00:00:00Z","payload":{"blob":"' + 'x'.repeat(100) + '"}}'
+    const out = canonicalizeTrace(keep + '\n' + strip).split('\n')
+    expect(out[0]).toBe(keep)
+    expect(out[1].length).toBeLessThan(strip.length)
+  })
 })

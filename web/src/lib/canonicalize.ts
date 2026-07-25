@@ -32,26 +32,44 @@ function isPlainObject(v: unknown): v is JSONObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
-/** Recursively blank `source.data` on any `{ type: 'image' }` content block. */
-function stripImageBlock(block: unknown): unknown {
-  if (Array.isArray(block)) return block.map(stripImageBlock)
-  if (!isPlainObject(block)) return block
+/** Recursively blank `source.data` on any `{ type: 'image' }` content block.
+ * Returns [block, changed] where changed indicates if anything was stripped. */
+function stripImageBlock(block: unknown): [unknown, boolean] {
+  if (Array.isArray(block)) {
+    let changed = false
+    const result = block.map((b) => {
+      const [stripped, blockChanged] = stripImageBlock(b)
+      if (blockChanged) changed = true
+      return stripped
+    })
+    return [result, changed]
+  }
+  if (!isPlainObject(block)) return [block, false]
 
   if (block.type === 'image' && isPlainObject(block.source) && typeof block.source.data === 'string') {
-    return { ...block, source: { ...block.source, data: '' } }
+    return [{ ...block, source: { ...block.source, data: '' } }, true]
   }
   if (Array.isArray(block.content)) {
-    return { ...block, content: block.content.map(stripImageBlock) }
+    const [strippedContent, contentChanged] = stripImageBlock(block.content)
+    if (contentChanged) {
+      return [{ ...block, content: strippedContent }, true]
+    }
   }
-  return block
+  return [block, false]
 }
 
-function canonicalizeClaudeLine(o: JSONObject): JSONObject {
+/** Returns the canonicalized object or null if unchanged. */
+function canonicalizeClaudeLine(o: JSONObject): JSONObject | null {
+  let changed = false
   let out = o
 
   const message = out.message
   if (isPlainObject(message) && Array.isArray(message.content)) {
-    out = { ...out, message: { ...message, content: message.content.map(stripImageBlock) } }
+    const [strippedContent, contentChanged] = stripImageBlock(message.content)
+    if (contentChanged) {
+      out = { ...out, message: { ...message, content: strippedContent } }
+      changed = true
+    }
   }
 
   const toolUseResult = out.toolUseResult
@@ -65,9 +83,10 @@ function canonicalizeClaudeLine(o: JSONObject): JSONObject {
       ...out,
       toolUseResult: { ...toolUseResult, file: { ...toolUseResult.file, base64: '' } },
     }
+    changed = true
   }
 
-  return out
+  return changed ? out : null
 }
 
 function codexReasoningStub(o: JSONObject): JSONObject | null {
@@ -80,7 +99,8 @@ function codexReasoningStub(o: JSONObject): JSONObject | null {
   return stub
 }
 
-function canonicalizeCodexLine(o: JSONObject): JSONObject {
+/** Returns the canonicalized object or null if unchanged. */
+function canonicalizeCodexLine(o: JSONObject): JSONObject | null {
   if (o.type === 'compacted') {
     const stub: JSONObject = { type: o.type }
     if ('timestamp' in o) stub.timestamp = o.timestamp
@@ -88,21 +108,47 @@ function canonicalizeCodexLine(o: JSONObject): JSONObject {
   }
   const reasoningStub = codexReasoningStub(o)
   if (reasoningStub) return reasoningStub
-  return o
+  return null
 }
 
-function canonicalizeValue(value: unknown): unknown {
-  if (!isPlainObject(value)) return value
-  // Both harnesses' irrelevant-payload shapes are structurally disjoint
-  // (Claude Code lines never carry Codex's payload.type, and vice versa),
-  // so applying both passes unconditionally is safe and avoids needing to
-  // sniff which harness a line came from.
-  return canonicalizeClaudeLine(canonicalizeCodexLine(value))
+/**
+ * Canonicalizes a value by applying Claude Code and Codex stripping rules.
+ * Returns the canonicalized object, or null if unchanged.
+ * Both harnesses' irrelevant-payload shapes are structurally disjoint
+ * (Claude Code lines never carry Codex's payload.type, and vice versa),
+ * so applying both passes unconditionally is safe and avoids needing to
+ * sniff which harness a line came from.
+ */
+function canonicalizeValue(value: unknown): JSONObject | null {
+  if (!isPlainObject(value)) return null
+
+  let out: JSONObject | null = null
+  let changed = false
+
+  // Apply Codex transformations first
+  const codexResult = canonicalizeCodexLine(value)
+  if (codexResult !== null) {
+    out = codexResult
+    changed = true
+  } else {
+    out = value
+  }
+
+  // Then apply Claude Code transformations
+  const claudeResult = canonicalizeClaudeLine(out)
+  if (claudeResult !== null) {
+    out = claudeResult
+    changed = true
+  }
+
+  return changed ? out : null
 }
 
 /**
  * Line-oriented canonicalization: non-JSON lines and lines whose parsed
  * shape doesn't match a known stripping rule pass through verbatim.
+ * Lines that parse and don't require changes are returned byte-identical
+ * to preserve unicode escapes, number formatting, and large integer precision.
  * Trailing-newline presence is preserved.
  */
 export function canonicalizeTrace(text: string): string {
@@ -117,7 +163,9 @@ export function canonicalizeTrace(text: string): string {
       return line
     }
     const canonicalized = canonicalizeValue(parsed)
-    return JSON.stringify(canonicalized)
+    // If canonicalized is null, nothing changed; return original line byte-identical.
+    // Otherwise, return the canonicalized object as JSON.
+    return canonicalized === null ? line : JSON.stringify(canonicalized)
   })
   return out.join('\n')
 }
