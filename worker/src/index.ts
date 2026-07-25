@@ -26,7 +26,7 @@ import {
 } from './verifier'
 import { VERIFIER_DEPLOYMENT } from './deployment'
 import { MAX_RAW_CIPHERTEXT_BODY_BYTES, rawBodyTooLarge, sessionQuotaExceeded } from './guards'
-import { renderCardOg } from './og'
+import { renderCardOg, renderPodiumOg } from './og'
 import {
   authenticationOptions,
   clearSessionCookie,
@@ -905,6 +905,36 @@ app.get('/api/passports/slug/:slug', async (c) => {
 
 // ---------- Share previews ----------
 
+// Podium OG image for the global leaderboard's top 3.
+app.get('/og/leaderboard', async (c) => {
+  try {
+    const entries = await loadLeaderboardEntries(c.env.DB)
+    const top3 = entries.slice(0, 3).map((e) => ({ name: e.name, grade: e.grade, score: e.verifiedScore }))
+    return await renderPodiumOg('Leaderboard', top3)
+  } catch (e) {
+    console.error('og render failed:', e)
+    return c.json({ error: 'preview unavailable' }, 500)
+  }
+})
+
+// Podium OG image for a ladder's top 3. 404s for an unknown slug, mirroring
+// the JSON endpoint (/api/ladders/:slug).
+app.get('/og/ladder/:slug', async (c) => {
+  try {
+    const ladder = await c.env.DB.prepare('SELECT id, name FROM ladders WHERE slug = ?')
+      .bind(c.req.param('slug'))
+      .first<{ id: string; name: string }>()
+    if (!ladder) return c.json({ error: 'ladder not found' }, 404)
+    const { results } = await c.env.DB.prepare(LADDER_MEMBERS_QUERY).bind(ladder.id).all<LeaderboardRow>()
+    const entries = rankEntries(results ?? [])
+    const top3 = entries.slice(0, 3).map((e) => ({ name: e.name, grade: e.grade, score: e.verifiedScore }))
+    return await renderPodiumOg(ladder.name, top3)
+  } catch (e) {
+    console.error('og render failed:', e)
+    return c.json({ error: 'preview unavailable' }, 500)
+  }
+})
+
 // Dynamic OG image: a 1200×630 passport render. /og/default for the landing.
 app.get('/og/:slug', async (c) => {
   const slug = c.req.param('slug').replace(/\.png$/, '')
@@ -930,6 +960,38 @@ app.get('/og/:slug', async (c) => {
     return c.json({ error: 'preview unavailable' }, 500)
   }
 })
+
+// Shared server-side meta injection for share-preview pages (card, leaderboard,
+// ladder): crawlers don't run JS, so the SPA's client-side title/meta updates
+// never reach them — this rewrites the static shell's <title>/<meta> in place.
+function rewritePageMeta(
+  assetRes: Response,
+  { title, description, image, url }: { title: string; description: string; image: string; url: string },
+): Response {
+  const content: Record<string, string> = {
+    'og:title': title,
+    'og:description': description,
+    'og:image': image,
+    'og:url': url,
+    'twitter:title': title,
+    'twitter:description': description,
+    'twitter:image': image,
+  }
+  return new HTMLRewriter()
+    .on('title', {
+      element(el) {
+        el.setInnerContent(title)
+      },
+    })
+    .on('meta', {
+      element(el) {
+        const key = el.getAttribute('property') ?? el.getAttribute('name')
+        if (key && content[key]) el.setAttribute('content', content[key])
+        if (key === 'description') el.setAttribute('content', description)
+      },
+    })
+    .transform(assetRes)
+}
 
 // Card pages get their meta injected server-side — crawlers don't run JS.
 app.get('/p/:slug', async (c) => {
@@ -957,29 +1019,36 @@ app.get('/p/:slug', async (c) => {
   const image = `${origin}/og/${slug}.png`
   const url = `${origin}/p/${slug}`
 
-  const content: Record<string, string> = {
-    'og:title': title,
-    'og:description': description,
-    'og:image': image,
-    'og:url': url,
-    'twitter:title': title,
-    'twitter:description': description,
-    'twitter:image': image,
-  }
-  return new HTMLRewriter()
-    .on('title', {
-      element(el) {
-        el.setInnerContent(title)
-      },
-    })
-    .on('meta', {
-      element(el) {
-        const key = el.getAttribute('property') ?? el.getAttribute('name')
-        if (key && content[key]) el.setAttribute('content', content[key])
-        if (key === 'description') el.setAttribute('content', description)
-      },
-    })
-    .transform(assetRes)
+  return rewritePageMeta(assetRes, { title, description, image, url })
+})
+
+// Leaderboard/ladder pages get their meta injected server-side too, same
+// mechanism as /p/:slug — crawlers don't run JS so the SPA's client-side
+// title/meta updates never reach them.
+app.get('/leaderboard', async (c) => {
+  const assetRes = await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url), c.req.raw))
+  const origin = new URL(c.req.url).origin
+  const title = 'Leaderboard — AI Passport'
+  const description = 'Verified AI fluency, ranked. Enclave-attested sessions only — no self-reported scores.'
+  const image = `${origin}/og/leaderboard`
+  const url = `${origin}/leaderboard`
+  return rewritePageMeta(assetRes, { title, description, image, url })
+})
+
+app.get('/l/:slug', async (c) => {
+  const slug = c.req.param('slug')
+  const assetRes = await c.env.ASSETS.fetch(new Request(new URL('/', c.req.url), c.req.raw))
+  const ladder = await c.env.DB.prepare('SELECT name FROM ladders WHERE slug = ?')
+    .bind(slug)
+    .first<{ name: string }>()
+  if (!ladder) return assetRes
+
+  const origin = new URL(c.req.url).origin
+  const title = `${ladder.name} — AI Passport Ladder`
+  const description = `${ladder.name}: a private leaderboard of verified AI fluency. Enclave-attested sessions only.`
+  const image = `${origin}/og/ladder/${slug}`
+  const url = `${origin}/l/${slug}`
+  return rewritePageMeta(assetRes, { title, description, image, url })
 })
 
 // Everything else falls through to static frontend assets (SPA).
