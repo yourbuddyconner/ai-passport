@@ -250,6 +250,122 @@ export async function submitOnboarding(displayName: string, title: string): Prom
   if (!res.ok) throw new Error('failed to save profile')
 }
 
+// ---------- Leaderboard & ladders ----------
+
+export interface LeaderboardEntry {
+  rank: number
+  slug: string
+  name: string
+  grade: string
+  verifiedScore: number
+  sessions: number
+  locAdded: number
+  concludedSessions: number
+}
+
+export interface Spotlight {
+  slug: string
+  name: string
+  value: number
+}
+
+export interface LeaderboardView {
+  total: number
+  entries: LeaderboardEntry[]
+  spotlights: {
+    linesShipped: Spotlight | null
+    concluded: Spotlight | null
+  }
+}
+
+export interface LadderView {
+  name: string
+  total: number
+  pending: number
+  entries: LeaderboardEntry[]
+}
+
+export async function getLeaderboard(): Promise<LeaderboardView> {
+  const res = await fetch('/api/leaderboard')
+  if (!res.ok) throw new Error('failed to load the leaderboard')
+  return res.json()
+}
+
+export async function getLadder(slug: string): Promise<LadderView | null> {
+  const res = await fetch(`/api/ladders/${slug}`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error('failed to load ladder')
+  return res.json()
+}
+
+/**
+ * Auth for ladder/listing mutations: pass an edit token for a legacy
+ * anonymous passport, or omit it for a passkey-authenticated owner (the
+ * session cookie travels with the request automatically).
+ */
+function authHeaders(editToken?: string): Record<string, string> {
+  return editToken ? { 'x-edit-token': editToken } : {}
+}
+
+export async function createLadder(
+  name: string,
+  passportId: string,
+  editToken?: string,
+): Promise<{ id: string; slug: string; inviteCode: string }> {
+  const res = await fetch('/api/ladders', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders(editToken) },
+    body: JSON.stringify({ name, passportId }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error ?? 'failed to create ladder')
+  return data
+}
+
+export async function joinLadder(
+  slug: string,
+  inviteCode: string,
+  passportId: string,
+  editToken?: string,
+): Promise<void> {
+  const res = await fetch(`/api/ladders/${slug}/join`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders(editToken) },
+    body: JSON.stringify({ inviteCode, passportId }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error ?? 'failed to join ladder')
+}
+
+export async function leaveLadder(
+  slug: string,
+  passportId: string,
+  editToken?: string,
+): Promise<void> {
+  const res = await fetch(`/api/ladders/${slug}/membership`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json', ...authHeaders(editToken) },
+    body: JSON.stringify({ passportId }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error ?? 'failed to leave ladder')
+}
+
+export async function setListed(
+  passportId: string,
+  listed: boolean,
+  editToken?: string,
+): Promise<{ listed: boolean; verifiedScore: number }> {
+  const res = await fetch(`/api/passports/${passportId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', ...authHeaders(editToken) },
+    body: JSON.stringify({ listed }),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error ?? 'failed to update leaderboard listing')
+  return data
+}
+
 /** Upload for a passkey-authenticated owner (session cookie, no edit token). */
 export async function uploadTraceAsOwner(passportId: string, file: File): Promise<UploadResult> {
   if (file.size > MAX_UPLOAD_BYTES) {

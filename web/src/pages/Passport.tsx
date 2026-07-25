@@ -447,6 +447,9 @@ export function Passport({ slug }: { slug: string }) {
             Get Your Own AI Passport →
           </a>
         </p>
+        <a href="/leaderboard" className="text-xs text-foreground/60 hover:text-foil hover:underline">
+          See the leaderboard →
+        </a>
       </div>
     </div>
   )

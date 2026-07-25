@@ -111,6 +111,9 @@ export function Landing({ onAuthed }: { onAuthed: () => void }) {
             How it works →
           </a>
         </p>
+        <a href="/leaderboard" className="text-xs text-foreground/60 hover:text-foil hover:underline">
+          See the leaderboard →
+        </a>
       </div>
     </div>
   )
