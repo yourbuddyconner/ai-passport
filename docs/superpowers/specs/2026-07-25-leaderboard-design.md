@@ -1,139 +1,148 @@
-# Leaderboard & Discovery — Design
+# Leaderboard, Team Ladders & Discovery — Design (amended)
 
-**Date:** 2026-07-25
-**Status:** Approved design, pre-implementation
+**Date:** 2026-07-25 (amended same day after adversarial product review)
+**Status:** Approved design, pre-implementation. Worker + web only — NO enclave changes.
 
 ## Goal
 
-A public `/leaderboard` page that closes the growth loop: browsing real verified
-cards makes people create passports. Opt-in listing, enclave-verified ranking,
-and rank propagation onto the shareable card/OG image (every card share
-advertises the ladder).
+Close the growth loop: colleague-to-colleague card sharing becomes group
+onboarding via private team ladders; a global leaderboard is the union view.
+Opt-in listing, enclave-verified ranking, rank shown at the moment of pride.
 
-Grounding at design time: 12 passports, 9 with sessions, 3,263 sessions.
+Grounding at design time: 12 passports, 9 active (the owner's circle — the
+launch asset).
 
-## Decisions (user-approved)
+## Decisions
 
-- **Purpose:** growth loop — gallery/ranking hybrid, optimized for the page
-  being shareable and cards being clickable. Not a talent directory (yet).
-- **Listing:** opt-in only, default off. A dashboard toggle; delist any time.
-  Consistent with the privacy posture (E2E encryption, pseudonymous slugs).
-- **Trust:** ranked by score over **enclave-verified sessions only**
-  (`verification = 'enclave'`). Format-verified sessions still show on cards
-  but contribute zero to ranking. Stated plainly on the page.
-- **Provenance without replay:** the enclave counts vendor-signed material it
-  observes — Claude thinking-block `signature` fields, Codex reasoning
-  `encrypted_content` — into a per-session `signed_blocks` count carried in
-  the attested stats. Displayed as "vendor-signed blocks present"; NEVER
-  validated (Fernet/symmetric — only the vendors can verify) and NEVER ranked.
-  The replay-oracle provenance badge is explicitly out of scope.
+- **Purpose:** growth loop. Primary surface = private/invite team ladders
+  (the product's real distribution channel is an engineer showing
+  colleagues); the global page is the union view.
+- **Listing (global):** opt-in, default off. Joining a team ladder exposes
+  you to that ladder's members only — it does NOT set the global flag.
+- **Trust:** ranked by score over enclave-verified sessions ONLY. Positive
+  framing on-page: "Every rank is backed by enclave-attested sessions."
+  Fine print (what attestation does/doesn't prove) lives on /about, not
+  under the page header.
+- **CUT (user decision):** `signed_blocks` — we cannot verify vendor
+  signatures (Fernet/symmetric), so we display nothing about them. No
+  enclave deploy in this batch. (Revisit only if vendors ever publish
+  verifiable receipts.)
+- **Review amendments adopted:** small-N shielding, rank-if-listed preview,
+  pride-moment prompt, page OG images, two spotlights with distinct winners,
+  zero-row gate, join-friction copy.
 
 ## Data model
 
 ```sql
 ALTER TABLE passports ADD COLUMN listed INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE passports ADD COLUMN verified_score INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN signed_blocks INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS ladders (
+  id TEXT PRIMARY KEY,
+  slug TEXT UNIQUE NOT NULL,          -- public URL path /l/:slug
+  invite_code TEXT UNIQUE NOT NULL,   -- unguessable join token
+  name TEXT NOT NULL,
+  created_by TEXT NOT NULL REFERENCES passports(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ladder_members (
+  ladder_id TEXT NOT NULL REFERENCES ladders(id),
+  passport_id TEXT NOT NULL REFERENCES passports(id),
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY (ladder_id, passport_id)
+);
 ```
 
-- `verified_score`: denormalized. Recomputed inside the sessions POST (upload,
-  reprocess) and session DELETE handlers: aggregate over the passport's
-  enclave-verified rows only, store `Math.round(score)`. Leaderboard reads are
-  a single indexed ORDER BY — no per-view score computation, ever.
-- `signed_blocks`: new SessionStats field (camelCase `signedBlocks`), parsed in
-  BOTH parsers with fixture parity:
-  - Claude Code: count content blocks (assistant lines, main chain only)
-    carrying a string `signature` field.
-  - Codex: count `response_item` payloads carrying a string
-    `encrypted_content` field.
-  - Enclave v0.4.3 (parser change → new pivot digest → full TVC deploy).
-  - mapRustStats + D1 columns + SessionRow + aggregate() thread it through;
-    zero-fill semantics identical to the other v2 fields (old enclave → 0,
-    preserveV2 guards apply unchanged).
+- `verified_score`: denormalized; recomputed in the sessions POST
+  (upload/reprocess), session DELETE, and on PATCH listed=true. Aggregate
+  over `verification='enclave'` rows only; store `Math.round(score)`.
+- Ladder slugs: generated like passport slugs. `invite_code`: 128-bit
+  random hex. Viewing a ladder page requires only the slug; JOINING requires
+  the invite code (share link = `/l/:slug?join=<code>`).
 
 ## API
 
-- `PATCH /api/passports/:id` body `{listed: boolean}` — edit-token or passkey
-  session auth (same guard as uploads). Also recomputes `verified_score` on
-  the transition to listed (covers passports whose sessions predate the
-  denormalization).
-- `GET /api/leaderboard` (public, `Cache-Control: public, max-age=60`):
-  ```json
-  {
-    "total": 7,
-    "entries": [{ "rank": 1, "slug": "...", "name": "...", "grade": "...",
-                   "verifiedScore": 71, "sessions": 214, "locAdded": 84021,
-                   "concludedSessions": 41, "signedBlocks": 12044 }],
-    "spotlights": {
-      "linesShipped": { "slug": "...", "name": "...", "value": 84021 },
-      "concluded":    { ... },
-      "longestStreak":{ ... },
-      "languages":    { ... }
-    }
-  }
-  ```
-  Entries: all listed passports ordered by `verified_score` DESC, ties broken
-  by earlier `created_at`. Spotlight values come from the same aggregate pass
-  over listed passports' sessions (acceptable at this scale; revisit caching
-  when listed count × sessions makes it slow).
-- Card payloads (`/api/passports/slug/:slug`, `/api/me`) gain
-  `rank: number | null` and `listedCount: number` when the passport is listed
-  (null rank when unlisted — UI omits the line).
+- `PATCH /api/passports/:id` `{listed: boolean}` — edit-token/passkey auth;
+  recomputes verified_score on transition to true.
+- `POST /api/ladders` `{name}` (auth'd passport) → `{id, slug, inviteCode}`;
+  creator auto-joins. Limit: a passport may create ≤ 5 ladders.
+- `POST /api/ladders/:slug/join` `{inviteCode}` (auth'd passport) → joins.
+  `DELETE /api/ladders/:slug/membership` → leave. Creator leaving does not
+  delete the ladder; last member leaving does.
+- `GET /api/ladders/:slug` (public): `{name, total, entries[]}` — members
+  with ≥1 enclave-verified session, ranked by verified_score, ties by
+  earlier created_at. Members with 0 verified sessions are listed in a
+  separate `pending` count, not as rows.
+- `GET /api/leaderboard` (public, Cache-Control 60s): globally-listed
+  passports (same gating: ≥1 enclave-verified session to appear), entries as
+  ladder shape, plus `spotlights`: exactly TWO at launch (Lines Shipped,
+  Sessions Concluded), winners enforced-distinct (a slug may win at most one;
+  next-best takes the second). Expand to four spotlights only when
+  total ≥ 15.
+- Card payloads gain, when applicable: `globalRank/listedCount` (only if
+  listed) and `ladders: [{slug, name, rank, size}]` (only the caller's own
+  via /api/me; public card shows ladder ranks only if the passport is a
+  member AND the ladder page is where the viewer came from — simpler: public
+  card shows globalRank only, ladder ranks live on ladder pages).
 
-## Score note
+## Rank display rules (small-N shielding)
 
-`verified_score` uses the existing `aggregate()` on the filtered row set —
-no new formula. A passport with zero enclave-verified sessions lists with
-score 0 (allowed; the empty-ladder problem is worse than a zero row).
+- Card + OG "#N of M" line renders ONLY when `listedCount >= 25`. Below
+  that, cards/OG are unchanged from today (no leakage of tiny N).
+- Team-ladder ranks are exempt from the floor — "#2 on Team Acme" is a
+  chosen group and reads as complete at any size. Shown on ladder pages
+  (and share text from ladder pages), not on the global card OG.
+- shareText updates follow the same rules as OG.
+
+## The listing/joining moments (conversion mechanics)
+
+- **Rank-if-listed preview:** the dashboard shows unlisted users their
+  would-be global rank, computed privately ("You'd be #4 of 9"). One query,
+  no exposure.
+- **Pride-moment prompt:** after a batch upload completes with ≥1 accepted
+  non-duplicate session, show a one-time inline prompt with the concrete
+  number: "You'd be #3 of 9 on the leaderboard — list your passport?"
+  [List me] [Not now]. Dismissal persists (localStorage) — never nag.
+- Settings toggle remains the system of record.
 
 ## UI
 
-- **`/leaderboard` page** (new route, linked from landing + card footer):
-  spotlight row of four mini-cards (Lines Shipped / Sessions Concluded /
-  Longest Streak / Most Languages — four different winners by design), then
-  the ranked table: rank, name → `/p/:slug` link, grade seal (reuse
-  `GradeSeal`), verified score, sessions, lines shipped, signed-blocks count.
-  Trust-posture line under the header: "Ranked by enclave-attested sessions
-  only. Signed-block counts are present-in-trace, not vendor-validated.
-  Listing is opt-in." Empty state sells the toggle.
-- **Dashboard**: a "List me on the leaderboard" toggle (Switch component,
-  same card style), showing current rank once listed.
-- **Public card + OG image**: when listed, a "#N of M on the leaderboard"
-  line; OG image gains the same (og.ts already draws stat lines — one more).
-  Not shown when unlisted — no leakage.
-
-## Gaming / abuse notes
-
-- Opt-in + enclave-only ranking (decided above).
-- `signed_blocks` displayed but never ranked (a faker can stuff opaque blobs;
-  we refuse to reward the number, only show it).
-- Rank recomputation is read-time (ORDER BY over ≤ hundreds of rows);
-  `verified_score` writes are upload-time — no cron, no drift beyond the 60s
-  cache.
-- Name collisions/impersonation on the ladder: names were always
-  user-chosen and public on cards; the ladder doesn't change that. Punt on
-  verified identity (existing product-wide limitation, documented on /about).
-
-## Not building
-
-Time-windowed ladders, followers/notifications, directory filters, replay
-oracle, attestor enclave, pagination.
-
-## Testing
-
-- Worker: parser fixtures for `signedBlocks` both harnesses (blocks with and
-  without the fields); verified_score recompute on upload/reprocess/delete
-  (unit-test the recompute helper); leaderboard endpoint shape + ordering +
-  tie-break; PATCH auth (wrong token 401, unlisted default).
-- Rust: same fixtures, parity counts; e2e asserts signed_blocks in the signed
-  payload.
-- Web: build; manual pass on empty/1-entry/9-entry states.
+- **/leaderboard**: trust headline ("Every rank is backed by
+  enclave-attested sessions"), two spotlight mini-cards, ranked table
+  (rank, name → card, grade seal, verified score, sessions, lines shipped).
+  Empty/thin state: "Start a ladder with your team" CTA + a copy-paste
+  one-liner for finding trace files (join-friction reduction:
+  `ls ~/.claude/projects/*/*.jsonl ~/.codex/sessions/*/*/*/*.jsonl`).
+- **/l/:slug** (ladder page): same table component scoped to members, ladder
+  name, member count, "Join this ladder" (with code) / "Invite" (copies
+  link with code, member-only). 
+- **Dashboard**: rank preview, listed toggle, "Your ladders" section with
+  create + invite-link copy.
+- **OG images**: og.ts gains a leaderboard/ladder variant — podium top-3
+  (grade seals + names + scores) in the existing card visual language. The
+  PAGE is the shareable artifact at launch, not individual cards.
 
 ## Rollout
 
-1. Parsers + migration + endpoints + UI ship together (zeros degrade fine).
-2. Enclave v0.4.3 deploy (standard dance); worker+web after. `signed_blocks`
-   populates as sessions are uploaded/re-uploaded — leaderboard doesn't wait
-   on it (column defaults 0, displayed as "—" when 0).
-3. Existing listed=0 default means launch is silent until people toggle; seed
-   by listing the owner's own passport and sharing the page.
+0. **Pre-seed (founder work, before announcing):** personally ask the 9
+   active passport holders to toggle listed and/or create the first team
+   ladder; page must be born with ≥7 rows.
+1. Migration + endpoints + UI ship together (worker+web only, one deploy).
+2. Owner creates the first ladder, shares invite links.
+3. Announce with the /leaderboard OG.
+
+## Not building
+
+signed_blocks (cut), time-windowed ladders, followers/notifications,
+directory filters, replay oracle, pagination, ladder admin roles
+(creator == just a member who made it), four spotlights (until N ≥ 15).
+
+## Testing
+
+- Worker: verified_score recompute paths (upload/reprocess/delete/list);
+  leaderboard + ladder endpoint shapes, ordering, tie-break, zero-row
+  gating, distinct-winner spotlights; ladder create/join/leave auth (wrong
+  invite code 403, join twice idempotent, last-leaver deletes, 5-ladder
+  cap); PATCH auth; small-N: card payload omits rank when listedCount < 25.
+- Web: build; manual pass on empty ladder, 1-member ladder, thin global
+  page, rank-preview + prompt flow.
