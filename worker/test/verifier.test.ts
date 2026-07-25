@@ -6,6 +6,7 @@ import {
   mergeLocalV2Metrics,
   shouldPreserveV2,
   analyzeCiphertext,
+  analyzeCiphertextRaw,
   parseCiphertextEnvelope,
   VerifierError,
   type AppProof,
@@ -425,5 +426,75 @@ describe('analyzeCiphertext (enclave pass-through)', () => {
         value: 'deadbeef',
       }),
     ).rejects.toBeInstanceOf(VerifierError)
+  })
+})
+
+describe('analyzeCiphertextRaw (binary envelope pass-through)', () => {
+  const passportId = 'passport-1'
+
+  function mockFetchOnce(payload: Record<string, unknown>, proof: AppProof) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ payload, proof }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function buildSignedResponse(stats: RustSessionStats) {
+    const payload = {
+      passport_id: passportId,
+      trace_sha256: 'abc123',
+      stats,
+      analyzed_at: 1234,
+    }
+    const { proof } = await makeProof(JSON.stringify(payload))
+    return { payload, proof }
+  }
+
+  it('POSTs the exact bytes to /analyze_raw as octet-stream with a matching content-length', async () => {
+    const { payload, proof } = await buildSignedResponse(baseRustStats())
+    const fetchMock = mockFetchOnce(payload, proof)
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 250, 251, 252])
+
+    const result = await analyzeCiphertextRaw('https://verifier.example', passportId, bytes)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://verifier.example/analyze_raw')
+    expect(init.method).toBe('POST')
+    expect(init.headers['content-type']).toBe('application/octet-stream')
+    expect(init.headers['content-length']).toBe(String(bytes.byteLength))
+    expect(init.body).toBe(bytes)
+    expect(result.stats.externalId).toBe('sess-1')
+  })
+
+  it('verifies the proof signature and passport binding identically to /analyze', async () => {
+    const { payload, proof } = await buildSignedResponse(baseRustStats())
+    mockFetchOnce(payload, proof)
+
+    await expect(
+      analyzeCiphertextRaw('https://verifier.example', 'a-different-passport', new Uint8Array([1])),
+    ).rejects.toBeInstanceOf(VerifierError)
+  })
+
+  it('surfaces a non-ok enclave response as VerifierError with the response status', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'bad envelope' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      analyzeCiphertextRaw('https://verifier.example', passportId, new Uint8Array([1])),
+    ).rejects.toMatchObject({ message: 'bad envelope', status: 400 })
   })
 })

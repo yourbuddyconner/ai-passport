@@ -257,20 +257,16 @@ export function parseCiphertextEnvelope(body: {
  * as `{ciphertext_b64}` (the enclave's wire format, snake_case) — no
  * re-encoding happens in the Worker either way.
  */
-export async function analyzeCiphertext(
-  verifierUrl: string,
+/**
+ * Shared response handling for both /analyze (JSON ciphertext) and
+ * /analyze_raw (binary ciphertext): both return the identical
+ * `{payload, proof}` JSON shape signed by the enclave's ephemeral key.
+ * Verifies the signature, checks the passport binding, and maps stats.
+ */
+async function handleAnalyzeResponse(
+  analyzeRes: Response,
   passportId: string,
-  envelope: CiphertextEnvelope,
 ): Promise<EnclaveAnalysis> {
-  const requestBody =
-    envelope.encoding === 'hex'
-      ? { ciphertext: envelope.value }
-      : { ciphertext_b64: envelope.value }
-  const analyzeRes = await fetch(`${verifierUrl}/analyze`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(requestBody),
-  })
   if (!analyzeRes.ok) {
     const body = (await analyzeRes.json().catch(() => null)) as { error?: string } | null
     // 400 = bad envelope/decrypt, 422 = the enclave parsed and rejected the trace.
@@ -299,6 +295,46 @@ export async function analyzeCiphertext(
     proof: result.proof,
     hasV2Metrics: hasV2Metrics(signed.stats),
   }
+}
+
+export async function analyzeCiphertext(
+  verifierUrl: string,
+  passportId: string,
+  envelope: CiphertextEnvelope,
+): Promise<EnclaveAnalysis> {
+  const requestBody =
+    envelope.encoding === 'hex'
+      ? { ciphertext: envelope.value }
+      : { ciphertext_b64: envelope.value }
+  const analyzeRes = await fetch(`${verifierUrl}/analyze`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  })
+  return handleAnalyzeResponse(analyzeRes, passportId)
+}
+
+/**
+ * Send an already-encrypted binary envelope (raw ciphertext bytes, produced
+ * by the browser's binary ECIES envelope path) straight through to the
+ * enclave's /analyze_raw endpoint as application/octet-stream — no base64 or
+ * hex re-encoding, no JSON wrapper. Response handling (signature + passport
+ * binding + stats mapping) is identical to the JSON /analyze path.
+ */
+export async function analyzeCiphertextRaw(
+  verifierUrl: string,
+  passportId: string,
+  bytes: Uint8Array,
+): Promise<EnclaveAnalysis> {
+  const analyzeRes = await fetch(`${verifierUrl}/analyze_raw`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/octet-stream',
+      'content-length': String(bytes.byteLength),
+    },
+    body: bytes,
+  })
+  return handleAnalyzeResponse(analyzeRes, passportId)
 }
 
 /**

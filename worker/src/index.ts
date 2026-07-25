@@ -3,6 +3,7 @@ import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
 import {
   analyzeCiphertext,
+  analyzeCiphertextRaw,
   analyzeViaEnclave,
   attestationMode,
   fetchQuorumPublicKey,
@@ -12,6 +13,7 @@ import {
   VerifierError,
 } from './verifier'
 import { VERIFIER_DEPLOYMENT } from './deployment'
+import { MAX_RAW_CIPHERTEXT_BODY_BYTES, rawBodyTooLarge, sessionQuotaExceeded } from './guards'
 import { renderCardOg } from './og'
 import {
   authenticationOptions,
@@ -271,30 +273,72 @@ app.post('/api/passports/:id/sessions', async (c) => {
   if (!isOwner && (!token || token !== passport.edit_token))
     return c.json({ error: 'not authorized for this passport' }, 403)
 
-  const isJsonBody = c.req.header('content-type')?.includes('application/json') ?? false
+  const contentType = c.req.header('content-type') ?? ''
+  const isRawBody = contentType.startsWith('application/octet-stream')
+  const isJsonBody = contentType.includes('application/json')
   const len = Number(c.req.header('content-length') ?? 0)
-  if (isJsonBody) {
+  if (isRawBody) {
+    // Pre-check when content-length is present so we can fail fast without
+    // buffering the body; the authoritative check below is on actual bytes.
+    if (rawBodyTooLarge(len)) return c.json({ error: 'ciphertext body too large (max 64 MB)' }, 413)
+  } else if (isJsonBody) {
     if (len > MAX_CIPHERTEXT_BODY_BYTES) return c.json({ error: 'ciphertext body too large (max 30 MB)' }, 413)
   } else {
     if (len > MAX_PLAINTEXT_BODY_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
   }
-  let text = await c.req.text()
+
+  // Cheap abuse guard, ahead of any analysis work (local or enclave), on
+  // every upload branch.
+  const sessionCount = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM sessions WHERE passport_id = ?',
+  )
+    .bind(id)
+    .first<{ count: number }>()
+  if (sessionQuotaExceeded(sessionCount?.count ?? 0))
+    return c.json({ error: 'session limit reached for this passport (1000)' }, 429)
+
+  let text = ''
+  let rawBytes: Uint8Array | null = null
+  if (isRawBody) {
+    rawBytes = new Uint8Array(await c.req.arrayBuffer())
+    // Authoritative check on actual bytes read, regardless of what (or
+    // whether) content-length claimed.
+    if (rawBodyTooLarge(rawBytes.byteLength))
+      return c.json({ error: 'ciphertext body too large (max 64 MB)' }, 413)
+  } else {
+    text = await c.req.text()
+  }
 
   let stats: SessionStats | null = null
   let verification: 'enclave' | 'format' = 'format'
   let proof: string | null = null
   let ciphertext: string | null = null
   let ciphertextEncoding: 'hex' | 'base64' = 'hex'
+  let ciphertextBytes: Uint8Array | null = null
   // True only for an old (pre-v2) enclave response that never got a local
   // v2 merge — signals the UPDATE path to leave existing v2 columns alone
   // rather than overwrite a real stored value with zeros.
   let preserveV2 = false
 
-  // End-to-end path: the browser encrypted {passport_id, trace} to the quorum
-  // key itself and sends only ciphertext — this Worker never sees plaintext.
-  // No fallback is possible (there is nothing to parse locally); errors are
-  // surfaced to the client.
-  if (c.req.header('content-type')?.includes('application/json')) {
+  // Raw binary path: the browser encrypted a binary envelope
+  // (passport id + trace, canonicalized) to the quorum key and posts the
+  // ciphertext bytes directly — no JSON, no base64/hex re-encoding. Same
+  // "Worker never sees plaintext" guarantee as the JSON ciphertext path, no
+  // plaintext fallback is possible here either.
+  if (isRawBody) {
+    if (!c.env.VERIFIER_URL) return c.json({ error: 'no verifier configured' }, 503)
+    try {
+      const analysis = await analyzeCiphertextRaw(c.env.VERIFIER_URL, id, rawBytes as Uint8Array)
+      stats = analysis.stats
+      verification = 'enclave'
+      proof = JSON.stringify(analysis.proof)
+      ciphertextBytes = rawBytes
+      preserveV2 = shouldPreserveV2(analysis, false)
+    } catch (e) {
+      if (e instanceof VerifierError) return c.json({ error: e.message }, e.status as 400 | 422)
+      throw e
+    }
+  } else if (isJsonBody) {
     let body: { ciphertext?: string; ciphertextB64?: string }
     try {
       body = JSON.parse(text) as { ciphertext?: string; ciphertextB64?: string }
@@ -379,11 +423,18 @@ app.post('/api/passports/:id/sessions', async (c) => {
   // Keep the quorum-encrypted trace for future re-verification. Only the
   // enclave can decrypt it; the Worker and R2 never hold plaintext at rest.
   let r2Key: string | null = null
-  if (ciphertext && c.env.TRACES) {
-    r2Key = `traces/${id}/${stats.externalId}.enc`
-    await c.env.TRACES.put(r2Key, ciphertext, {
-      customMetadata: { encoding: ciphertextEncoding },
-    })
+  if (c.env.TRACES) {
+    if (ciphertextBytes) {
+      r2Key = `traces/${id}/${stats.externalId}.enc`
+      await c.env.TRACES.put(r2Key, ciphertextBytes, {
+        customMetadata: { encoding: 'binary' },
+      })
+    } else if (ciphertext) {
+      r2Key = `traces/${id}/${stats.externalId}.enc`
+      await c.env.TRACES.put(r2Key, ciphertext, {
+        customMetadata: { encoding: ciphertextEncoding },
+      })
+    }
   }
 
   const projectHash = stats.projectHash ?? (stats.cwd ? await hashCwd(stats.cwd) : null)
