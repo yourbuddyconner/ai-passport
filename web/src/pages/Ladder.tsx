@@ -19,6 +19,7 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [join, setJoin] = useState<JoinState>({ status: 'idle', error: null })
+  const [justJoined, setJustJoined] = useState(false)
   const [leaveBusy, setLeaveBusy] = useState(false)
 
   const joinCode = new URLSearchParams(location.search).get('join')
@@ -45,12 +46,14 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
   }, [refresh])
 
   const isMember = !!(data && mySlug && data.entries.some((e) => e.slug === mySlug))
+  const membership = isMember || justJoined
 
   async function handleJoin() {
     if (!passportId || !joinCode) return
     setJoin({ status: 'joining', error: null })
     try {
       await joinLadder(slug, joinCode, passportId, editToken)
+      setJustJoined(true)
       setJoin({ status: 'joined', error: null })
       refresh()
       const url = new URL(location.href)
@@ -119,7 +122,7 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
         </p>
       )}
 
-      {joinCode && !isMember && (
+      {joinCode && !membership && (
         <Card className="page-rise guilloche mb-6" style={{ animationDelay: '80ms' }}>
           <CardContent className="space-y-3 p-5 text-center">
             {passportId ? (
@@ -147,13 +150,26 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
         </Card>
       )}
 
+      {justJoined && !isMember && (
+        <Card className="page-rise guilloche mb-6" style={{ animationDelay: '80ms' }}>
+          <CardContent className="space-y-3 p-5 text-center">
+            <p className="text-sm text-card-foreground">
+              You've joined <strong>{data.name}</strong>. Your rank will appear once you upload an enclave-verified session.
+            </p>
+            <a href="/dashboard" className="inline-block">
+              <Button>Upload session →</Button>
+            </a>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="page-rise guilloche" style={{ animationDelay: '140ms' }}>
         <CardContent className="p-4">
           <RankTable entries={data.entries} emptyMessage="No one on this ladder has a verified session yet." />
         </CardContent>
       </Card>
 
-      {isMember && (
+      {membership && (
         <div className="page-rise mt-6 flex justify-center" style={{ animationDelay: '200ms' }}>
           <Button variant="outline" size="sm" onClick={() => void handleLeave()} disabled={leaveBusy}>
             <SignOut size={15} weight="duotone" aria-hidden="true" />
