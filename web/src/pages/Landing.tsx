@@ -103,7 +103,11 @@ export function Landing({ onAuthed }: { onAuthed: () => void }) {
       </Card>
 
       <div className="page-rise mt-6 text-center" style={{ animationDelay: '180ms' }}>
-        <Button variant="outline" onClick={() => (window.location.href = '/leaderboard')}>
+        <Button
+          variant="outline"
+          className="border-foil/70 bg-transparent text-base text-foil hover:border-foil hover:bg-foil/10 hover:text-foil"
+          onClick={() => (window.location.href = '/leaderboard')}
+        >
           See the leaderboard →
         </Button>
       </div>
