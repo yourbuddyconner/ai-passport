@@ -114,8 +114,8 @@ export function Leaderboard() {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              The global board is still thin. Rank against your own team instead — create a private
-              ladder from your dashboard and invite teammates with a link.
+              The leaderboard is just getting started. Grab your spot early — or make it a team
+              thing: create a private ladder from your dashboard and invite teammates with a link.
             </p>
             <a
               href="/"
