@@ -239,6 +239,39 @@ app.get('/api/me', async (c) => {
       }
     >()
   const rows = results ?? []
+
+  // Own ladder memberships — invite_code is fine to return here since this
+  // is the owner viewing their own dashboard, not a public payload. At most
+  // LADDER_LIMIT_PER_CREATOR (5) ladders can be created by a user, and joined
+  // ladders are typically few, so re-running LADDER_MEMBERS_QUERY per ladder
+  // is cheap.
+  const { results: ownLadders } = await c.env.DB.prepare(
+    `SELECT l.slug AS slug, l.name AS name, l.invite_code AS inviteCode
+     FROM ladder_members lm JOIN ladders l ON l.id = lm.ladder_id
+     WHERE lm.passport_id = ?
+     ORDER BY lm.joined_at ASC`,
+  )
+    .bind(passport.id)
+    .all<{ slug: string; name: string; inviteCode: string }>()
+  const ladders = await Promise.all(
+    (ownLadders ?? []).map(async (l) => {
+      const ladderRow = await c.env.DB.prepare('SELECT id FROM ladders WHERE slug = ?')
+        .bind(l.slug)
+        .first<{ id: string }>()
+      let rank: number | null = null
+      let size = 0
+      if (ladderRow) {
+        const { results: memberRows } = await c.env.DB.prepare(LADDER_MEMBERS_QUERY)
+          .bind(ladderRow.id)
+          .all<LeaderboardRow>()
+        const entries = rankEntries(memberRows ?? [])
+        size = entries.length
+        rank = entries.find((e) => e.slug === passport.slug)?.rank ?? null
+      }
+      return { slug: l.slug, name: l.name, rank, size, inviteCode: l.inviteCode }
+    }),
+  )
+
   return c.json({
     user: { displayName: user.displayName, title: user.title, onboarded: user.onboarded },
     passport,
@@ -246,6 +279,7 @@ app.get('/api/me', async (c) => {
     listedCount,
     globalRank: isListed ? (ownEntry?.rank ?? null) : null,
     rankIfListed: isListed ? null : rankIfListed(leaderboardEntries, passport.verified_score),
+    ladders,
     card: aggregate(rows),
     sessions: rows.map((r) => ({
       externalId: r.external_id,

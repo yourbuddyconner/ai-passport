@@ -25,8 +25,19 @@ import { VaultModal } from '@/components/VaultModal'
 import { Endorsements } from '@/components/Endorsements'
 import { GradeSeal } from '@/components/GradeSeal'
 import { mrz } from '@/lib/mrz'
-import { deleteSession, logout, uploadTraceAsOwner, type Me, type UploadResult } from '@/lib/api'
+import {
+  createLadder,
+  deleteSession,
+  logout,
+  setListed,
+  uploadTraceAsOwner,
+  type Me,
+  type MyLadder,
+  type UploadResult,
+} from '@/lib/api'
 import { useCountUp } from '@/lib/useCountUp'
+
+const PRIDE_PROMPT_DISMISSED_KEY = 'lb-prompt-dismissed'
 
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -83,6 +94,21 @@ export function Dashboard({
   const fileInput = useRef<HTMLInputElement>(null)
   const busyRef = useRef(false)
 
+  // Listed toggle
+  const [listedBusy, setListedBusy] = useState(false)
+  const [listedError, setListedError] = useState<string | null>(null)
+
+  // Pride-moment prompt: shown once, after a batch upload lands ≥1 accepted
+  // non-duplicate result while the passport is still unlisted.
+  const [pridePromptPending, setPridePromptPending] = useState(false)
+  const [showPridePrompt, setShowPridePrompt] = useState(false)
+
+  // Your ladders card
+  const [ladderName, setLadderName] = useState('')
+  const [ladderBusy, setLadderBusy] = useState(false)
+  const [ladderError, setLadderError] = useState<string | null>(null)
+  const [copiedLadderSlug, setCopiedLadderSlug] = useState<string | null>(null)
+
   const cardUrl = `${location.origin}/p/${me.passport.slug}`
   const [mrz1, mrz2] = mrz(me.user.displayName, me.passport.slug, me.card.score, me.card.grade)
 
@@ -93,6 +119,7 @@ export function Dashboard({
       setBusy(true)
       const batch = Array.from(files)
       setProgress({ done: 0, total: batch.length })
+      let anyAccepted = false
       try {
         for (const [i, file] of batch.entries()) {
           // One bad file must never kill the batch or wedge the uploader.
@@ -109,16 +136,83 @@ export function Dashboard({
           setResults((prev) => [{ ...result, key: `${file.name}-${Date.now()}` }, ...prev])
           setProgress({ done: i + 1, total: batch.length })
           // Refresh after every accepted trace so the stats climb file by file.
-          if (result.ok && !result.duplicate) onRefresh()
+          if (result.ok && !result.duplicate) {
+            anyAccepted = true
+            onRefresh()
+          }
         }
       } finally {
         setBusy(false)
         busyRef.current = false
         setProgress(null)
+        // Defer the pride-moment prompt decision to the effect below, which
+        // runs once fresh `me` data (post-upload rank/listed state) lands.
+        if (anyAccepted) setPridePromptPending(true)
       }
     },
     [me.passport.id, onRefresh],
   )
+
+  // Fires once the batch above has finished and `me` has been refetched at
+  // least once since — evaluates the pride-moment prompt against fresh data.
+  useEffect(() => {
+    if (!pridePromptPending) return
+    setPridePromptPending(false)
+    if (!me.listed && localStorage.getItem(PRIDE_PROMPT_DISMISSED_KEY) !== '1') {
+      setShowPridePrompt(true)
+    }
+  }, [me, pridePromptPending])
+
+  async function handleToggleListed() {
+    setListedBusy(true)
+    setListedError(null)
+    try {
+      await setListed(me.passport.id, !me.listed)
+      onRefresh()
+    } catch (e) {
+      setListedError(e instanceof Error ? e.message : 'failed to update leaderboard listing')
+    } finally {
+      setListedBusy(false)
+    }
+  }
+
+  function dismissPridePrompt() {
+    localStorage.setItem(PRIDE_PROMPT_DISMISSED_KEY, '1')
+    setShowPridePrompt(false)
+  }
+
+  async function acceptPridePrompt() {
+    localStorage.setItem(PRIDE_PROMPT_DISMISSED_KEY, '1')
+    setShowPridePrompt(false)
+    try {
+      await setListed(me.passport.id, true)
+      onRefresh()
+    } catch (e) {
+      setListedError(e instanceof Error ? e.message : 'failed to update leaderboard listing')
+    }
+  }
+
+  async function handleCreateLadder() {
+    const name = ladderName.trim()
+    if (!name) return
+    setLadderBusy(true)
+    setLadderError(null)
+    try {
+      await createLadder(name, me.passport.id)
+      setLadderName('')
+      onRefresh()
+    } catch (e) {
+      setLadderError(e instanceof Error ? e.message : 'failed to create ladder')
+    } finally {
+      setLadderBusy(false)
+    }
+  }
+
+  function copyInviteLink(ladder: MyLadder) {
+    void navigator.clipboard.writeText(`${location.origin}/l/${ladder.slug}?join=${ladder.inviteCode}`)
+    setCopiedLadderSlug(ladder.slug)
+    setTimeout(() => setCopiedLadderSlug((s) => (s === ladder.slug ? null : s)), 1500)
+  }
 
   useEffect(() => {
     let depth = 0
@@ -230,6 +324,57 @@ export function Dashboard({
         <StatTile icon={CalendarBlank} label="active days" value={me.card.activeDays} />
       </div>
 
+      {/* Leaderboard listing */}
+      <Card className="mt-5">
+        <CardHeader>
+          <CardTitle>Leaderboard</CardTitle>
+          <CardDescription>
+            {me.listed
+              ? 'Your card is visible on the public leaderboard.'
+              : 'List your passport to show up on the public leaderboard.'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-4">
+          <div className="text-sm">
+            {me.listed ? (
+              <p>
+                <span className="font-semibold tabular-nums">#{me.globalRank ?? '—'}</span> of{' '}
+                <span className="tabular-nums">{me.listedCount}</span> on the{' '}
+                <a href="/leaderboard" className="text-foil hover:underline">
+                  leaderboard
+                </a>
+              </p>
+            ) : (
+              <p className="text-muted-foreground">
+                You'd be{' '}
+                <span className="font-semibold tabular-nums text-card-foreground">
+                  #{me.rankIfListed}
+                </span>{' '}
+                of <span className="tabular-nums">{me.listedCount + 1}</span> if listed
+              </p>
+            )}
+            {listedError && <p className="mt-1 text-xs text-destructive">{listedError}</p>}
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={me.listed}
+            aria-label={me.listed ? 'Unlist from the leaderboard' : 'List on the leaderboard'}
+            disabled={listedBusy}
+            onClick={() => void handleToggleListed()}
+            className={`relative h-7 w-12 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foil disabled:opacity-50 ${
+              me.listed ? 'bg-primary' : 'bg-muted'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                me.listed ? 'translate-x-5' : 'translate-x-0'
+              }`}
+            />
+          </button>
+        </CardContent>
+      </Card>
+
       {/* Upload */}
       <Card className="mt-5">
         <CardHeader>
@@ -284,6 +429,23 @@ export function Dashboard({
               onChange={(e) => e.target.files && void handleFiles(e.target.files)}
             />
           </div>
+
+          {showPridePrompt && (
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-foil/40 bg-foil/10 px-4 py-3 text-sm">
+              <p className="min-w-[200px] flex-1 text-card-foreground">
+                You'd be <strong>#{me.rankIfListed}</strong> of <strong>{me.listedCount + 1}</strong>{' '}
+                on the leaderboard — list your passport?
+              </p>
+              <div className="flex shrink-0 gap-2">
+                <Button size="sm" onClick={() => void acceptPridePrompt()}>
+                  List me
+                </Button>
+                <Button size="sm" variant="ghost" onClick={dismissPridePrompt}>
+                  Not now
+                </Button>
+              </div>
+            </div>
+          )}
 
           {results.length > 0 && (
             <ul className="space-y-2" aria-live="polite">
@@ -420,6 +582,59 @@ export function Dashboard({
           </CardContent>
         </Card>
       )}
+
+      {/* Your ladders */}
+      <Card className="mt-5">
+        <CardHeader>
+          <CardTitle>Your Ladders</CardTitle>
+          <CardDescription>Private leaderboards you've created or joined.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {me.ladders.length > 0 ? (
+            <ul className="divide-y divide-border">
+              {me.ladders.map((l) => (
+                <li key={l.slug} className="flex flex-wrap items-center gap-3 py-3 text-sm">
+                  <a
+                    href={`/l/${l.slug}`}
+                    className="font-medium text-card-foreground hover:text-foil hover:underline"
+                  >
+                    {l.name}
+                  </a>
+                  <span className="text-muted-foreground">
+                    {l.rank != null ? `#${l.rank} of ${l.size}` : 'unranked'}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => copyInviteLink(l)}
+                  >
+                    <Copy size={14} weight="duotone" aria-hidden="true" />
+                    {copiedLadderSlug === l.slug ? 'Copied!' : 'Copy invite link'}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">You're not on any ladders yet.</p>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+            <Input
+              value={ladderName}
+              onChange={(e) => setLadderName(e.target.value)}
+              placeholder="Ladder name"
+              maxLength={64}
+              aria-label="New ladder name"
+              className="min-w-0 flex-1"
+            />
+            <Button onClick={() => void handleCreateLadder()} disabled={ladderBusy || !ladderName.trim()}>
+              {ladderBusy ? 'Creating…' : 'Create a ladder'}
+            </Button>
+          </div>
+          {ladderError && <p className="text-xs text-destructive">{ladderError}</p>}
+        </CardContent>
+      </Card>
 
       {/* Share */}
       <Card className="mt-5">

@@ -223,9 +223,22 @@ export interface SessionSummary {
   models: string[]
 }
 
+export interface MyLadder {
+  slug: string
+  name: string
+  rank: number | null
+  size: number
+  inviteCode: string
+}
+
 export interface Me {
   user: { displayName: string; title: string | null; onboarded: boolean }
   passport: { id: string; slug: string; name: string }
+  listed: boolean
+  listedCount: number
+  globalRank: number | null
+  rankIfListed: number | null
+  ladders: MyLadder[]
   card: CardData
   sessions: SessionSummary[]
 }
