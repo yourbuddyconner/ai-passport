@@ -33,6 +33,9 @@ export interface LeaderboardRow {
   sessions: number
   locAdded: number
   concludedSessions: number
+  linkedin: string | null
+  twitter: string | null
+  company: string | null
 }
 
 export interface LeaderboardEntry extends LeaderboardRow {

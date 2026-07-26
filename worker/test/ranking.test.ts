@@ -53,6 +53,9 @@ function ladderRow(over: Partial<LeaderboardRow> = {}): LeaderboardRow {
     sessions: 1,
     locAdded: 0,
     concludedSessions: 0,
+    linkedin: null,
+    twitter: null,
+    company: null,
     ...over,
   }
 }

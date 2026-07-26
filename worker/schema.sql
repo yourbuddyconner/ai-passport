@@ -5,7 +5,10 @@ CREATE TABLE IF NOT EXISTS passports (
   edit_token TEXT NOT NULL,
   created_at TEXT NOT NULL,
   listed INTEGER NOT NULL DEFAULT 0,
-  verified_score INTEGER NOT NULL DEFAULT 0
+  verified_score INTEGER NOT NULL DEFAULT 0,
+  linkedin TEXT,
+  twitter TEXT,
+  company TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (

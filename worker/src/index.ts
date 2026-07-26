@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
+import { applyProfilePatch } from './profile'
 import {
   computeVerifiedScore,
   includeGlobalRank,
@@ -89,7 +90,8 @@ const LEADERBOARD_QUERY = `
   SELECT p.slug AS slug, p.name AS name, p.verified_score AS verifiedScore,
          p.created_at AS createdAt, COUNT(s.id) AS sessions,
          COALESCE(SUM(s.loc_added), 0) AS locAdded,
-         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions
+         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions,
+         p.linkedin AS linkedin, p.twitter AS twitter, p.company AS company
   FROM passports p
   JOIN sessions s ON s.passport_id = p.id AND s.verification = 'enclave'
   WHERE p.listed = 1
@@ -210,10 +212,19 @@ app.get('/api/me', async (c) => {
   const user = await userFromCookie(c.env, c.req.header('cookie'))
   if (!user) return c.json({ error: 'not signed in' }, 401)
   const passport = await c.env.DB.prepare(
-    'SELECT id, slug, name, listed, verified_score FROM passports WHERE user_id = ?',
+    'SELECT id, slug, name, listed, verified_score, linkedin, twitter, company FROM passports WHERE user_id = ?',
   )
     .bind(user.id)
-    .first<{ id: string; slug: string; name: string; listed: number; verified_score: number }>()
+    .first<{
+      id: string
+      slug: string
+      name: string
+      listed: number
+      verified_score: number
+      linkedin: string | null
+      twitter: string | null
+      company: string | null
+    }>()
   if (!passport) return c.json({ error: 'no passport for user' }, 500)
 
   // Dashboard preview has no small-N floor (unlike the public card payload):
@@ -717,13 +728,38 @@ app.patch('/api/passports/:id', async (c) => {
   if (auth instanceof Response) return auth
 
   const body = await c.req.json().catch(() => null)
-  if (typeof body?.listed !== 'boolean') return c.json({ error: 'listed must be a boolean' }, 400)
+  if (body === null || typeof body !== 'object') return c.json({ error: 'invalid body' }, 400)
 
-  await c.env.DB.prepare('UPDATE passports SET listed = ? WHERE id = ?')
-    .bind(body.listed ? 1 : 0, id)
-    .run()
+  const hasListed = 'listed' in body
+  if (hasListed && typeof (body as { listed?: unknown }).listed !== 'boolean') {
+    return c.json({ error: 'listed must be a boolean' }, 400)
+  }
+
+  const patch = applyProfilePatch(body as Record<string, unknown>)
+  if (!patch.ok) return c.json({ error: patch.error }, 400)
+
+  const setClauses: string[] = []
+  const params: unknown[] = []
+  for (const [key, value] of Object.entries(patch.fields)) {
+    setClauses.push(`${key} = ?`)
+    params.push(value)
+  }
+  if (hasListed) {
+    setClauses.push('listed = ?')
+    params.push((body as { listed: boolean }).listed ? 1 : 0)
+  }
+
+  if (setClauses.length > 0) {
+    await c.env.DB.prepare(`UPDATE passports SET ${setClauses.join(', ')} WHERE id = ?`)
+      .bind(...params, id)
+      .run()
+  }
   const verifiedScore = await recomputeVerifiedScore(c.env.DB, id)
-  return c.json({ listed: body.listed, verifiedScore })
+  return c.json({
+    listed: hasListed ? (body as { listed: boolean }).listed : undefined,
+    verifiedScore,
+    ...patch.fields,
+  })
 })
 
 // Listed passports with ≥1 enclave-verified session, ranked by verified_score.
@@ -742,6 +778,9 @@ app.get('/api/leaderboard', async (c) => {
       sessions: e.sessions,
       locAdded: e.locAdded,
       concludedSessions: e.concludedSessions,
+      linkedin: e.linkedin,
+      twitter: e.twitter,
+      company: e.company,
     })),
     spotlights,
   })
@@ -757,7 +796,8 @@ const LADDER_MEMBERS_QUERY = `
   SELECT p.slug AS slug, p.name AS name, p.verified_score AS verifiedScore,
          p.created_at AS createdAt, COUNT(s.id) AS sessions,
          COALESCE(SUM(s.loc_added), 0) AS locAdded,
-         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions
+         COALESCE(SUM(CASE WHEN s.outcome IN ('shipped', 'landed') THEN 1 ELSE 0 END), 0) AS concludedSessions,
+         p.linkedin AS linkedin, p.twitter AS twitter, p.company AS company
   FROM ladder_members lm
   JOIN passports p ON p.id = lm.passport_id
   LEFT JOIN sessions s ON s.passport_id = p.id AND s.verification = 'enclave'
@@ -899,6 +939,9 @@ app.get('/api/ladders/:slug', async (c) => {
       sessions: e.sessions,
       locAdded: e.locAdded,
       concludedSessions: e.concludedSessions,
+      linkedin: e.linkedin,
+      twitter: e.twitter,
+      company: e.company,
     })),
   })
 })
@@ -906,10 +949,19 @@ app.get('/api/ladders/:slug', async (c) => {
 app.get('/api/passports/slug/:slug', async (c) => {
   const slug = c.req.param('slug')
   const passport = await c.env.DB.prepare(
-    'SELECT id, slug, name, created_at, listed FROM passports WHERE slug = ?',
+    'SELECT id, slug, name, created_at, listed, linkedin, twitter, company FROM passports WHERE slug = ?',
   )
     .bind(slug)
-    .first<{ id: string; slug: string; name: string; created_at: string; listed: number }>()
+    .first<{
+      id: string
+      slug: string
+      name: string
+      created_at: string
+      listed: number
+      linkedin: string | null
+      twitter: string | null
+      company: string | null
+    }>()
   if (!passport) return c.json({ error: 'passport not found' }, 404)
 
   const { results } = await c.env.DB.prepare(
@@ -938,7 +990,14 @@ app.get('/api/passports/slug/:slug', async (c) => {
   }
 
   return c.json({
-    passport: { slug: passport.slug, name: passport.name, createdAt: passport.created_at },
+    passport: {
+      slug: passport.slug,
+      name: passport.name,
+      createdAt: passport.created_at,
+      linkedin: passport.linkedin,
+      twitter: passport.twitter,
+      company: passport.company,
+    },
     card: aggregate(rows),
     verification: {
       // 'attested' once the verifier runs on TVC prod with attestation checks;
