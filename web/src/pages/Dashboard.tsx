@@ -30,11 +30,13 @@ import {
   deleteSession,
   logout,
   setListed,
+  updateProfile,
   uploadTraceAsOwner,
   type Me,
   type MyLadder,
   type UploadResult,
 } from '@/lib/api'
+import { normalizeCompany, normalizeLinkedin, normalizeTwitter } from '@/lib/profile'
 import { useCountUp } from '@/lib/useCountUp'
 
 const PRIDE_PROMPT_DISMISSED_KEY = 'lb-prompt-dismissed'
@@ -97,6 +99,19 @@ export function Dashboard({
   // Listed toggle
   const [listedBusy, setListedBusy] = useState(false)
   const [listedError, setListedError] = useState<string | null>(null)
+
+  // Profile fields (LinkedIn / X / company)
+  const [linkedinInput, setLinkedinInput] = useState(me.passport.linkedin ?? '')
+  const [twitterInput, setTwitterInput] = useState(me.passport.twitter ?? '')
+  const [companyInput, setCompanyInput] = useState(me.passport.company ?? '')
+  const [profileFieldErrors, setProfileFieldErrors] = useState<{
+    linkedin?: string
+    twitter?: string
+    company?: string
+  }>({})
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileSaved, setProfileSaved] = useState(false)
 
   // Pride-moment prompt: shown once, after a batch upload lands ≥1 accepted
   // non-duplicate result while the passport is still unlisted.
@@ -173,6 +188,59 @@ export function Dashboard({
       setListedError(e instanceof Error ? e.message : 'failed to update leaderboard listing')
     } finally {
       setListedBusy(false)
+    }
+  }
+
+  async function handleSaveProfile() {
+    setProfileError(null)
+    setProfileSaved(false)
+
+    const errors: typeof profileFieldErrors = {}
+    const fields: { linkedin?: string | null; twitter?: string | null; company?: string | null } = {}
+
+    const linkedin = linkedinInput.trim()
+    if (linkedin === '') {
+      fields.linkedin = null
+    } else {
+      const norm = normalizeLinkedin(linkedin)
+      if (norm === null) errors.linkedin = 'invalid linkedin'
+      else fields.linkedin = norm
+    }
+
+    const twitter = twitterInput.trim()
+    if (twitter === '') {
+      fields.twitter = null
+    } else {
+      const norm = normalizeTwitter(twitter)
+      if (norm === null) errors.twitter = 'invalid twitter'
+      else fields.twitter = norm
+    }
+
+    const company = companyInput.trim()
+    if (company === '') {
+      fields.company = null
+    } else {
+      const norm = normalizeCompany(company)
+      if (norm === null) errors.company = 'invalid company'
+      else fields.company = norm
+    }
+
+    setProfileFieldErrors(errors)
+    if (Object.keys(errors).length > 0) return
+
+    setProfileBusy(true)
+    try {
+      const result = await updateProfile(me.passport.id, fields)
+      setLinkedinInput(result.linkedin ?? '')
+      setTwitterInput(result.twitter ?? '')
+      setCompanyInput(result.company ?? '')
+      setProfileSaved(true)
+      setTimeout(() => setProfileSaved(false), 1500)
+      onRefresh()
+    } catch (e) {
+      setProfileError(e instanceof Error ? e.message : 'failed to save profile')
+    } finally {
+      setProfileBusy(false)
     }
   }
 
@@ -372,6 +440,68 @@ export function Dashboard({
               }`}
             />
           </button>
+        </CardContent>
+      </Card>
+
+      {/* Profile */}
+      <Card className="mt-5">
+        <CardHeader>
+          <CardTitle>Profile</CardTitle>
+          <CardDescription>Shown on your card and on the leaderboard.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <label htmlFor="profile-linkedin" className="mb-1 block text-xs text-muted-foreground">
+              LinkedIn
+            </label>
+            <Input
+              id="profile-linkedin"
+              value={linkedinInput}
+              onChange={(e) => setLinkedinInput(e.target.value)}
+              placeholder="linkedin.com/in/your-slug or just the slug"
+              spellCheck={false}
+            />
+            {profileFieldErrors.linkedin && (
+              <p className="mt-1 text-xs text-destructive">{profileFieldErrors.linkedin}</p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="profile-twitter" className="mb-1 block text-xs text-muted-foreground">
+              X / Twitter
+            </label>
+            <Input
+              id="profile-twitter"
+              value={twitterInput}
+              onChange={(e) => setTwitterInput(e.target.value)}
+              placeholder="@handle or x.com/handle"
+              spellCheck={false}
+            />
+            {profileFieldErrors.twitter && (
+              <p className="mt-1 text-xs text-destructive">{profileFieldErrors.twitter}</p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="profile-company" className="mb-1 block text-xs text-muted-foreground">
+              Company
+            </label>
+            <Input
+              id="profile-company"
+              value={companyInput}
+              onChange={(e) => setCompanyInput(e.target.value)}
+              placeholder="Company name"
+              maxLength={64}
+            />
+            {profileFieldErrors.company && (
+              <p className="mt-1 text-xs text-destructive">{profileFieldErrors.company}</p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            <Button onClick={() => void handleSaveProfile()} disabled={profileBusy}>
+              {profileBusy ? 'Saving…' : 'Save'}
+            </Button>
+            {profileSaved && <span className="text-xs text-verify">Saved</span>}
+          </div>
+          {profileError && <p className="text-xs text-destructive">{profileError}</p>}
         </CardContent>
       </Card>
 

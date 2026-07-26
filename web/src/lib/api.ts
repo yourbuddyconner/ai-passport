@@ -65,7 +65,14 @@ export interface SessionProofView {
 }
 
 export interface PassportView {
-  passport: { slug: string; name: string; createdAt: string }
+  passport: {
+    slug: string
+    name: string
+    createdAt: string
+    linkedin: string | null
+    twitter: string | null
+    company: string | null
+  }
   card: CardData
   verification: {
     attestation: 'attested' | 'dev'
@@ -233,7 +240,14 @@ export interface MyLadder {
 
 export interface Me {
   user: { displayName: string; title: string | null; onboarded: boolean }
-  passport: { id: string; slug: string; name: string }
+  passport: {
+    id: string
+    slug: string
+    name: string
+    linkedin: string | null
+    twitter: string | null
+    company: string | null
+  }
   listed: boolean
   listedCount: number
   globalRank: number | null
@@ -274,6 +288,9 @@ export interface LeaderboardEntry {
   sessions: number
   locAdded: number
   concludedSessions: number
+  linkedin: string | null
+  twitter: string | null
+  company: string | null
 }
 
 export interface Spotlight {
@@ -376,6 +393,21 @@ export async function setListed(
   })
   const data = await res.json().catch(() => null)
   if (!res.ok) throw new Error(data?.error ?? 'failed to update leaderboard listing')
+  return data
+}
+
+export async function updateProfile(
+  passportId: string,
+  fields: { linkedin?: string | null; twitter?: string | null; company?: string | null },
+  editToken?: string,
+): Promise<{ linkedin: string | null; twitter: string | null; company: string | null }> {
+  const res = await fetch(`/api/passports/${passportId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', ...authHeaders(editToken) },
+    body: JSON.stringify(fields),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error ?? 'failed to update profile')
   return data
 }
 

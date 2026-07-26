@@ -11,6 +11,7 @@ import {
   Copy,
   ShareNetwork,
   XLogo,
+  LinkedinLogo,
   WarningCircle,
   Robot,
   Timer,
@@ -162,6 +163,35 @@ export function Passport({ slug }: { slug: string }) {
               bearer / titulaire
             </p>
             <h1 className="mt-1 break-words text-4xl font-semibold">{passport.name}</h1>
+            {(passport.company || passport.linkedin || passport.twitter) && (
+              <div className="mt-1 flex items-center gap-2">
+                {passport.company && (
+                  <span className="text-sm text-muted-foreground">{passport.company}</span>
+                )}
+                {passport.linkedin && (
+                  <a
+                    href={`https://www.linkedin.com/in/${passport.linkedin}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="LinkedIn profile"
+                    className="text-muted-foreground transition-colors hover:text-foil"
+                  >
+                    <LinkedinLogo size={16} weight="duotone" aria-hidden="true" />
+                  </a>
+                )}
+                {passport.twitter && (
+                  <a
+                    href={`https://x.com/${passport.twitter}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="X profile"
+                    className="text-muted-foreground transition-colors hover:text-foil"
+                  >
+                    <XLogo size={16} weight="duotone" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
+            )}
             <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-[11px] uppercase">
               <div>
                 <dt className="tracking-widest text-muted-foreground/80">first entry</dt>
