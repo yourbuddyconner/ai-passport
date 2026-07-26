@@ -46,7 +46,8 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
   }, [refresh])
 
   const isMember = !!(data && mySlug && data.entries.some((e) => e.slug === mySlug))
-  const membership = isMember || justJoined
+  const isKnownMember = !!me?.ladders?.some((l) => l.slug === slug)
+  const membership = isMember || justJoined || isKnownMember
 
   async function handleJoin() {
     if (!passportId || !joinCode) return

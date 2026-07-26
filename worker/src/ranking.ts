@@ -129,10 +129,11 @@ export function ladderLimitReached(existingCount: number): boolean {
   return existingCount >= LADDER_LIMIT_PER_CREATOR
 }
 
-/** 32 lowercase hex chars from two UUIDs stripped of dashes, truncated. */
+/** 32 lowercase hex chars, 128 bits of crypto-random entropy. */
 export function makeInviteCode(): string {
-  const raw = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '')
-  return raw.slice(0, 32)
+  // 16 random bytes -> 32 lowercase hex chars = true 128 bits of entropy.
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** True when the leaver was the last member — caller then deletes the ladder row too. */

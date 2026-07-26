@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono'
 import { parseTrace, ParseError, type SessionStats } from './parsers'
 import { aggregate, type SessionRow } from './score'
 import {
+  computeVerifiedScore,
   includeGlobalRank,
   isLastMember,
   ladderLimitReached,
@@ -240,6 +241,21 @@ app.get('/api/me', async (c) => {
     >()
   const rows = results ?? []
 
+  // Self-heal verified_score lazily: the stored column can go stale (e.g.
+  // it predates a fix, or was written by a code path that didn't recompute
+  // it). We already have every enclave-verified session row in hand from
+  // the query above, so recomputing here costs zero extra queries — only
+  // an UPDATE when the value actually drifted.
+  let verifiedScore = passport.verified_score
+  const freshVerifiedScore = computeVerifiedScore(rows.filter((r) => r.verification === 'enclave'))
+  if (freshVerifiedScore !== verifiedScore) {
+    await c.env.DB.prepare('UPDATE passports SET verified_score = ? WHERE id = ?')
+      .bind(freshVerifiedScore, passport.id)
+      .run()
+    verifiedScore = freshVerifiedScore
+    passport.verified_score = freshVerifiedScore
+  }
+
   // Own ladder memberships — invite_code is fine to return here since this
   // is the owner viewing their own dashboard, not a public payload. At most
   // LADDER_LIMIT_PER_CREATOR (5) ladders can be created by a user, and joined
@@ -278,7 +294,7 @@ app.get('/api/me', async (c) => {
     listed: isListed,
     listedCount,
     globalRank: isListed ? (ownEntry?.rank ?? null) : null,
-    rankIfListed: isListed ? null : rankIfListed(leaderboardEntries, passport.verified_score),
+    rankIfListed: isListed ? null : rankIfListed(leaderboardEntries, verifiedScore),
     ladders,
     card: aggregate(rows),
     sessions: rows.map((r) => ({
@@ -809,6 +825,11 @@ app.post('/api/ladders/:slug/join', async (c) => {
   )
     .bind(ladder.id, passportId, new Date().toISOString())
     .run()
+  try {
+    await recomputeVerifiedScore(c.env.DB, passportId)
+  } catch (e) {
+    console.error('verified_score recompute failed:', e)
+  }
   return c.json({ joined: true })
 })
 
