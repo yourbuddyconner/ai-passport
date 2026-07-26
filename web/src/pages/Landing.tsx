@@ -102,6 +102,12 @@ export function Landing({ onAuthed }: { onAuthed: () => void }) {
         </CardContent>
       </Card>
 
+      <div className="page-rise mt-6 text-center" style={{ animationDelay: '180ms' }}>
+        <Button variant="outline" onClick={() => (window.location.href = '/leaderboard')}>
+          See the leaderboard →
+        </Button>
+      </div>
+
       <div className="page-rise mt-12 flex flex-col items-center gap-3" style={{ animationDelay: '240ms' }}>
         <TurnkeyBadge />
         <p className="text-center text-xs text-foreground/60">
