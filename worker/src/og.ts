@@ -75,19 +75,23 @@ const MEDAL: Record<number, { rim: string; label: string }> = {
   3: { rim: '#a86a3d', label: '3RD' },
 }
 
-const PODIUM_HEIGHT: Record<number, number> = { 1: 168, 2: 128, 3: 96 }
+// Stand heights are budgeted against the 630px canvas: the tallest block
+// (2-line name + medal + 1ST stand ≈ 310px) must fit under the header
+// (~130px) inside the card's ~450px of content space, or satori shrinks
+// the podium row and its bottom-aligned blocks spill up over the title.
+const PODIUM_HEIGHT: Record<number, number> = { 1: 112, 2: 84, 3: 60 }
 
 function podiumBlock(entry: { name: string; grade: string; score: number }, rank: number): string {
   const medal = MEDAL[rank]
   const standHeight = PODIUM_HEIGHT[rank]
   return `<div style="display:flex;flex-direction:column;align-items:center;width:250px">
-    <span style="font-family:Fraunces;font-size:30px;color:#2b2118;text-align:center;max-width:230px">${esc(entry.name)}</span>
-    <span style="font-family:Mono;font-size:15px;letter-spacing:2px;color:#756449;margin-top:4px">${esc(entry.grade.toUpperCase())}</span>
-    <div style="display:flex;align-items:center;justify-content:center;margin-top:14px;width:104px;height:104px;border-radius:999px;border:4px solid ${medal.rim};background:radial-gradient(circle at 32% 28%, #f0d98b 0%, #d0a94e 34%, #a8842f 68%, #8a6a20 100%);box-shadow:inset 0 2px 4px rgba(255,245,210,0.75)">
-      <span style="font-size:36px;font-weight:700;font-family:Mono;color:#2b2118">${entry.score}</span>
+    <span style="font-family:Fraunces;font-size:26px;color:#2b2118;text-align:center;max-width:230px">${esc(entry.name)}</span>
+    <span style="font-family:Mono;font-size:14px;letter-spacing:2px;color:#756449;margin-top:4px">${esc(entry.grade.toUpperCase())}</span>
+    <div style="display:flex;align-items:center;justify-content:center;margin-top:10px;width:88px;height:88px;border-radius:999px;border:4px solid ${medal.rim};background:radial-gradient(circle at 32% 28%, #f0d98b 0%, #d0a94e 34%, #a8842f 68%, #8a6a20 100%);box-shadow:inset 0 2px 4px rgba(255,245,210,0.75)">
+      <span style="font-size:32px;font-weight:700;font-family:Mono;color:#2b2118">${entry.score}</span>
     </div>
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;margin-top:16px;width:100%;height:${standHeight}px;background:linear-gradient(180deg, rgba(208,169,78,0.18) 0%, rgba(208,169,78,0.06) 100%);border:1px solid #d8cbae;border-radius:8px 8px 0 0;padding-top:10px">
-      <span style="font-family:Mono;font-size:22px;font-weight:700;letter-spacing:2px;color:${medal.rim}">${medal.label}</span>
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;margin-top:12px;width:100%;height:${standHeight}px;background:linear-gradient(180deg, rgba(208,169,78,0.18) 0%, rgba(208,169,78,0.06) 100%);border:1px solid #d8cbae;border-radius:8px 8px 0 0;padding-top:8px">
+      <span style="font-family:Mono;font-size:20px;font-weight:700;letter-spacing:2px;color:${medal.rim}">${medal.label}</span>
     </div>
   </div>`
 }
@@ -120,9 +124,12 @@ export async function renderPodiumOg(
           ? [[entries[0], 1]]
           : []
 
+  // flex-shrink:0 + flex:1 + align-items:flex-end pin the stands to the card
+  // bottom; if a block ever outgrows the budget it overflows downward past
+  // the card edge instead of shrinking and spilling up over the title.
   const podium =
     order.length > 0
-      ? `<div style="display:flex;align-items:flex-end;justify-content:center;gap:28px;margin-top:36px">
+      ? `<div style="display:flex;flex:1;flex-shrink:0;align-items:flex-end;justify-content:center;gap:28px;margin-top:24px">
           ${order.map(([entry, rank]) => podiumBlock(entry, rank)).join('')}
         </div>`
       : `<div style="display:flex;flex-direction:column;align-items:center;margin-top:56px">
@@ -132,9 +139,9 @@ export async function renderPodiumOg(
 
   const html = `
   <div style="display:flex;flex-direction:column;width:1200px;height:630px;background:#180e11;padding:34px">
-    <div style="display:flex;flex-direction:column;align-items:center;flex:1;background:#f3ecdd;border-radius:14px;border:1px solid rgba(200,184,143,0.5);padding:44px 54px;position:relative">
+    <div style="display:flex;flex-direction:column;align-items:center;flex:1;background:#f3ecdd;border-radius:14px;border:1px solid rgba(200,184,143,0.5);padding:36px 54px 0;position:relative">
       <span style="font-family:Mono;font-size:19px;letter-spacing:6px;color:#756449">AI PASSPORT · VERIFIED LEADERBOARD</span>
-      <span style="font-family:Fraunces;font-size:60px;color:#2b2118;margin-top:10px">${esc(title)}</span>
+      <span style="font-family:Fraunces;font-size:52px;color:#2b2118;margin-top:10px">${esc(title)}</span>
       ${podium}
     </div>
     <div style="display:flex;justify-content:center;margin-top:16px">
