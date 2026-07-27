@@ -23,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { TurnkeyBadge } from '@/components/TurnkeyBadge'
 import { VaultModal } from '@/components/VaultModal'
 import { Endorsements } from '@/components/Endorsements'
+import { PagerControls, usePager } from '@/components/Pager'
 import { GradeSeal } from '@/components/GradeSeal'
 import { mrz } from '@/lib/mrz'
 import {
@@ -123,6 +124,10 @@ export function Dashboard({
   const [ladderBusy, setLadderBusy] = useState(false)
   const [ladderError, setLadderError] = useState<string | null>(null)
   const [copiedLadderSlug, setCopiedLadderSlug] = useState<string | null>(null)
+
+  const PAGE_SIZE = 25
+  const resultsPager = usePager(results, PAGE_SIZE)
+  const sessionsPager = usePager(me.sessions, PAGE_SIZE)
 
   const cardUrl = `${location.origin}/p/${me.passport.slug}`
   const [mrz1, mrz2] = mrz(me.user.displayName, me.passport.slug, me.card.score, me.card.grade)
@@ -579,7 +584,7 @@ export function Dashboard({
 
           {results.length > 0 && (
             <ul className="space-y-2" aria-live="polite">
-              {results.map((r) => (
+              {resultsPager.pageItems.map((r) => (
                 <li
                   key={r.key}
                   className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm"
@@ -623,6 +628,7 @@ export function Dashboard({
               ))}
             </ul>
           )}
+          {results.length > 0 && <PagerControls pager={resultsPager} label="uploads" />}
         </CardContent>
       </Card>
 
@@ -652,7 +658,7 @@ export function Dashboard({
           </CardHeader>
           <CardContent>
             <ul className="divide-y divide-border">
-              {me.sessions.map((s) => (
+              {sessionsPager.pageItems.map((s) => (
                 <li key={s.externalId} className="flex items-center gap-3 py-3 text-sm">
                   <Badge variant="secondary" className="shrink-0">
                     {HARNESS_LABELS[s.harness] ?? s.harness}
@@ -709,6 +715,7 @@ export function Dashboard({
                 </li>
               ))}
             </ul>
+            <PagerControls pager={sessionsPager} label="sessions" />
           </CardContent>
         </Card>
       )}
