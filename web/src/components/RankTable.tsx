@@ -31,7 +31,11 @@ export function RankTable({
             <th scope="col" className="px-3 py-2 text-right font-medium">
               Sessions
             </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+            <th
+              scope="col"
+              className="px-3 py-2 text-right font-medium"
+              title="Gross lines added: every + line in this member's session diffs, excluding lockfiles and generated paths. Deletions don't subtract."
+            >
               Lines shipped
             </th>
           </tr>

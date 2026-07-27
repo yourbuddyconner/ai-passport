@@ -10,11 +10,13 @@ const THIN_THRESHOLD = 3
 function SpotlightCard({
   icon: Icon,
   label,
+  labelTitle,
   spotlight,
   unit,
 }: {
   icon: typeof Trophy
   label: string
+  labelTitle?: string
   spotlight: Spotlight
   unit: string
 }) {
@@ -27,7 +29,12 @@ function SpotlightCard({
         <Icon size={18} weight="duotone" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
+        <p
+          title={labelTitle}
+          className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground"
+        >
+          {label}
+        </p>
         <p className="truncate font-semibold">{spotlight.name}</p>
         <p className="text-xs text-muted-foreground">
           {spotlight.value.toLocaleString()} {unit}
@@ -82,6 +89,7 @@ export function Leaderboard() {
             <SpotlightCard
               icon={Lightning}
               label="Lines shipped"
+              labelTitle="Gross lines added: every + line in session diffs, excluding lockfiles and generated paths. Deletions don't subtract."
               spotlight={data!.spotlights.linesShipped}
               unit="lines added"
             />
