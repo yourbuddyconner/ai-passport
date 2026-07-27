@@ -172,7 +172,7 @@ export function Ladder({ slug, me }: { slug: string; me: Me | null }) {
 
       {membership && (
         <div className="page-rise mt-6 flex justify-center" style={{ animationDelay: '200ms' }}>
-          <Button variant="outline" size="sm" onClick={() => void handleLeave()} disabled={leaveBusy}>
+          <Button variant="destructive" size="sm" onClick={() => void handleLeave()} disabled={leaveBusy}>
             <SignOut size={15} weight="duotone" aria-hidden="true" />
             {leaveBusy ? 'Leaving…' : 'Leave ladder'}
           </Button>

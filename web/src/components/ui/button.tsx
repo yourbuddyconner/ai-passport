@@ -10,6 +10,8 @@ const buttonVariants = cva(
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         secondary: 'bg-muted text-accent-foreground hover:bg-accent',
         outline: 'border border-primary/40 bg-transparent text-card-foreground hover:bg-primary/10',
+        destructive:
+          'border border-destructive/40 bg-transparent text-destructive hover:bg-destructive/10 hover:border-destructive/70',
         ghost: 'text-foreground/80 hover:bg-white/10 hover:text-foreground',
         /* for buttons sitting on the dark cover backdrop */
         cover: 'border border-foil/40 bg-transparent text-foreground hover:bg-foil/10 hover:border-foil/70',
