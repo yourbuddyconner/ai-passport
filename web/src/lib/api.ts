@@ -29,6 +29,16 @@ export interface CardData {
   totalToolCalls: number
   totalInputTokens: number
   totalOutputTokens: number
+  /** v3 token metrics; absent on payloads from older workers. */
+  totalCacheReadTokens?: number
+  totalCacheCreationTokens?: number
+  totalReasoningOutputTokens?: number
+  totalWebSearchRequests?: number
+  totalWebFetchRequests?: number
+  totalSubagentInputTokens?: number
+  totalSubagentOutputTokens?: number
+  totalSubagentCacheReadTokens?: number
+  totalSubagentCacheCreationTokens?: number
   activeHours: number
   activeDays: number
   firstActivity: string | null

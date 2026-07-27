@@ -20,7 +20,7 @@ fn codex_trace() -> String {
         r#"{"timestamp":"2026-05-28T04:51:40.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}"#,
         r#"{"timestamp":"2026-05-28T04:52:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}"}}"#,
         r#"{"timestamp":"2026-05-28T04:53:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant"}}"#,
-        r#"{"timestamp":"2026-05-28T04:55:57.216Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":780470,"output_tokens":13366}}}}"#,
+        r#"{"timestamp":"2026-05-28T04:55:57.216Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":780470,"cached_input_tokens":700000,"output_tokens":13366,"reasoning_output_tokens":4200}}}}"#,
     ]
     .join("\n")
 }
@@ -51,6 +51,8 @@ fn parses_codex_trace() {
     assert_eq!(s.tool_call_count, 1);
     assert_eq!(s.input_tokens, 780470);
     assert_eq!(s.output_tokens, 13366);
+    assert_eq!(s.cache_read_tokens, 700000);
+    assert_eq!(s.reasoning_output_tokens, 4200);
     assert_eq!(s.models, vec!["gpt-5.4"]);
     assert_eq!(s.tool_counts.get("exec_command"), Some(&1));
     assert!(s.project_hash.is_some());

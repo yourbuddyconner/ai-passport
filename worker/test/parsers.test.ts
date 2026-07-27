@@ -65,7 +65,14 @@ const codexTrace = [
     type: 'event_msg',
     payload: {
       type: 'token_count',
-      info: { total_token_usage: { input_tokens: 780470, output_tokens: 13366 } },
+      info: {
+        total_token_usage: {
+          input_tokens: 780470,
+          cached_input_tokens: 700000,
+          output_tokens: 13366,
+          reasoning_output_tokens: 4200,
+        },
+      },
     },
   },
 ]
@@ -88,6 +95,127 @@ describe('parseTrace: claude-code', () => {
   })
 })
 
+describe('parseClaudeCode: usage dedup', () => {
+  // Claude Code writes one JSONL line per content block, repeating the same
+  // usage object and requestId on every line of one API request. Usage and
+  // messageCount must count once per request (falling back to message.id,
+  // then per-line), and cache token fields must be captured.
+  const usage = {
+    input_tokens: 100,
+    output_tokens: 40,
+    cache_read_input_tokens: 900,
+    cache_creation_input_tokens: 30,
+    server_tool_use: { web_search_requests: 2, web_fetch_requests: 1 },
+  }
+  const lines = [
+    { type: 'user', sessionId: 's4', message: { content: 'go' } },
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      requestId: 'r1',
+      message: { id: 'm1', usage, content: [{ type: 'thinking', thinking: '...' }] },
+    },
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      requestId: 'r1',
+      message: { id: 'm1', usage, content: [{ type: 'text', text: 'hi' }] },
+    },
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      requestId: 'r1',
+      message: {
+        id: 'm1',
+        usage,
+        content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+      },
+    },
+    // no requestId → message.id fallback dedupes these two lines
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      message: {
+        id: 'm2',
+        usage: { input_tokens: 7, output_tokens: 3 },
+        content: [{ type: 'text', text: 'a' }],
+      },
+    },
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      message: {
+        id: 'm2',
+        usage: { input_tokens: 7, output_tokens: 3 },
+        content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'ls' } }],
+      },
+    },
+    // neither requestId nor message.id → counted per line
+    {
+      type: 'assistant',
+      sessionId: 's4',
+      message: { usage: { input_tokens: 1, output_tokens: 2 }, content: [] },
+    },
+    // completed subagent (Task) result: its usage is the only surviving
+    // record of subagent spend — summed into the subagent* fields
+    {
+      type: 'user',
+      sessionId: 's4',
+      toolUseResult: {
+        status: 'completed',
+        agentId: 'a1',
+        usage: {
+          input_tokens: 5,
+          output_tokens: 500,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 20,
+        },
+      },
+      message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] },
+    },
+    // same agentId again (async completion re-post) → not double-counted
+    {
+      type: 'user',
+      sessionId: 's4',
+      toolUseResult: {
+        status: 'completed',
+        agentId: 'a1',
+        usage: {
+          input_tokens: 5,
+          output_tokens: 500,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 20,
+        },
+      },
+      message: { content: [{ type: 'tool_result', tool_use_id: 't1b' }] },
+    },
+    // async launch carries no usage → ignored
+    {
+      type: 'user',
+      sessionId: 's4',
+      toolUseResult: { status: 'async_launched', agentId: 'a2' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 't2b' }] },
+    },
+  ]
+
+  it('counts usage and messages once per API request', () => {
+    const s = parseClaudeCode(lines)
+    expect(s.inputTokens).toBe(108) // 100 + 7 + 1, not 100*3 + 7*2 + 1
+    expect(s.outputTokens).toBe(45) // 40 + 3 + 2
+    expect(s.cacheReadTokens).toBe(900)
+    expect(s.cacheCreationTokens).toBe(30)
+    expect(s.webSearchRequests).toBe(2) // once per request, not per line
+    expect(s.webFetchRequests).toBe(1)
+    expect(s.subagentInputTokens).toBe(5) // a1 counted once; async a2 ignored
+    expect(s.subagentOutputTokens).toBe(500)
+    expect(s.subagentCacheReadTokens).toBe(1000)
+    expect(s.subagentCacheCreationTokens).toBe(20)
+    expect(s.reasoningOutputTokens).toBe(0) // codex-only signal
+    expect(s.messageCount).toBe(7) // user + r1 + m2 + keyless + 3 result lines
+    expect(s.toolCallCount).toBe(2)
+  })
+})
+
 describe('parseTrace: codex', () => {
   it('parses a codex trace', () => {
     const s = parseTrace(codexTrace)
@@ -97,6 +225,9 @@ describe('parseTrace: codex', () => {
     expect(s.toolCallCount).toBe(1)
     expect(s.inputTokens).toBe(780470)
     expect(s.outputTokens).toBe(13366)
+    expect(s.cacheReadTokens).toBe(700000)
+    expect(s.cacheCreationTokens).toBe(0)
+    expect(s.reasoningOutputTokens).toBe(4200)
     expect(s.models).toEqual(['gpt-5.4'])
     expect(s.toolCounts).toEqual({ exec_command: 1 })
   })

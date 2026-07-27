@@ -19,7 +19,12 @@ interface CodexLine {
     output?: string
     message?: string
     info?: {
-      total_token_usage?: { input_tokens?: number; output_tokens?: number }
+      total_token_usage?: {
+        input_tokens?: number
+        cached_input_tokens?: number
+        output_tokens?: number
+        reasoning_output_tokens?: number
+      }
     }
   }
 }
@@ -76,6 +81,15 @@ export function parseCodex(lines: Iterable<unknown>): SessionStats {
     toolCallCount: 0,
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningOutputTokens: 0,
+    webSearchRequests: 0,
+    webFetchRequests: 0,
+    subagentInputTokens: 0,
+    subagentOutputTokens: 0,
+    subagentCacheReadTokens: 0,
+    subagentCacheCreationTokens: 0,
     models: [],
     toolCounts: {},
     locAdded: 0,
@@ -95,7 +109,14 @@ export function parseCodex(lines: Iterable<unknown>): SessionStats {
     backgroundTasks: 0,
   }
   const models = new Set<string>()
-  let lastUsage: { input_tokens?: number; output_tokens?: number } | undefined
+  let lastUsage:
+    | {
+        input_tokens?: number
+        cached_input_tokens?: number
+        output_tokens?: number
+        reasoning_output_tokens?: number
+      }
+    | undefined
   const callCommands = new Map<string, string>() // call_id -> cmd
   const events: OutcomeEvent[] = []
   const runs: number[] = []
@@ -202,6 +223,8 @@ export function parseCodex(lines: Iterable<unknown>): SessionStats {
   if (lastUsage) {
     stats.inputTokens = lastUsage.input_tokens ?? 0
     stats.outputTokens = lastUsage.output_tokens ?? 0
+    stats.cacheReadTokens = lastUsage.cached_input_tokens ?? 0
+    stats.reasoningOutputTokens = lastUsage.reasoning_output_tokens ?? 0
   }
   stats.models = [...models]
   stats.agenticity = median(runs)

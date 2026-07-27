@@ -35,6 +35,40 @@ pub struct SessionStats {
     /// Total output tokens reported by the harness.
     #[serde(with = "qos_json::string_or_numeric")]
     pub output_tokens: u64,
+    /// Input tokens served from prompt cache. For Claude Code this is
+    /// `cache_read_input_tokens` (disjoint from `input_tokens`); for Codex,
+    /// `cached_input_tokens` (a subset of its `input_tokens`). `default` so
+    /// payloads from builds that predate the field still decode.
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub cache_read_tokens: u64,
+    /// Input tokens written into the prompt cache (Claude Code
+    /// `cache_creation_input_tokens`; Codex does not report this).
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub cache_creation_tokens: u64,
+    /// Reasoning/thinking output tokens (Codex `reasoning_output_tokens`;
+    /// Claude Code folds thinking into `output_tokens`, so this stays 0).
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub reasoning_output_tokens: u64,
+    /// Server-side web search invocations, summed once per API request.
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub web_search_requests: u64,
+    /// Server-side web fetch invocations, summed once per API request.
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub web_fetch_requests: u64,
+    /// Subagent (Task tool) spend, summed from completed results'
+    /// `toolUseResult.usage` — the only record of subagent tokens in the
+    /// uploaded trace. Deduped by agentId.
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub subagent_input_tokens: u64,
+    /// Subagent output tokens (see `subagent_input_tokens`).
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub subagent_output_tokens: u64,
+    /// Subagent prompt-cache reads (see `subagent_input_tokens`).
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub subagent_cache_read_tokens: u64,
+    /// Subagent prompt-cache writes (see `subagent_input_tokens`).
+    #[serde(default, with = "qos_json::string_or_numeric")]
+    pub subagent_cache_creation_tokens: u64,
     /// Distinct model identifiers seen in the trace.
     pub models: Vec<String>,
     /// Tool name -> invocation count. BTreeMap for deterministic serialization.

@@ -7,7 +7,10 @@ export function computeVerifiedScore(rows: SessionRow[]): number {
 }
 
 const SESSION_COLUMNS = `harness, started_at, ended_at, message_count, tool_call_count,
-  input_tokens, output_tokens, models, tool_counts, project_hash, loc_added, loc_removed,
+  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_output_tokens, web_search_requests, web_fetch_requests,
+            subagent_input_tokens, subagent_output_tokens, subagent_cache_read_tokens,
+            subagent_cache_creation_tokens, models, tool_counts, project_hash, loc_added, loc_removed,
   languages, command_counts, human_turns, agenticity, longest_run, parallel_batches,
   delegation_calls, verified_edit_cycles, red_green_cycles, outcome, skills, mcp_servers,
   background_tasks`

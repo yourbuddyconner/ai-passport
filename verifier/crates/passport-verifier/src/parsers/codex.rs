@@ -93,7 +93,7 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
     let mut tool_call_count: u64 = 0;
     let mut models: BTreeSet<String> = BTreeSet::new();
     let mut tool_counts: BTreeMap<String, u64> = BTreeMap::new();
-    let mut last_usage: Option<(u64, u64)> = None;
+    let mut last_usage: Option<(u64, u64, u64, u64)> = None;
 
     let mut loc_added: u64 = 0;
     let mut loc_removed: u64 = 0;
@@ -160,6 +160,14 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
                         .unwrap_or(0),
                     usage
                         .get("output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    usage
+                        .get("cached_input_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                    usage
+                        .get("reasoning_output_tokens")
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
                 ));
@@ -279,7 +287,8 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
         return Err(ParseError("No activity found in Codex trace".to_string()));
     }
 
-    let (input_tokens, output_tokens) = last_usage.unwrap_or((0, 0));
+    let (input_tokens, output_tokens, cache_read_tokens, reasoning_output_tokens) =
+        last_usage.unwrap_or((0, 0, 0, 0));
     let run_values: Vec<f64> = runs.iter().map(|&r| r as f64).collect();
     let agenticity = median(&run_values);
     let longest_run = runs.iter().copied().max().unwrap_or(0);
@@ -294,6 +303,15 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
         tool_call_count,
         input_tokens,
         output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens: 0,
+        reasoning_output_tokens,
+        web_search_requests: 0,
+        web_fetch_requests: 0,
+        subagent_input_tokens: 0,
+        subagent_output_tokens: 0,
+        subagent_cache_read_tokens: 0,
+        subagent_cache_creation_tokens: 0,
         models: models.into_iter().collect(),
         tool_counts,
         project_hash: cwd.as_deref().map(project_hash),

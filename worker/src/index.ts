@@ -21,6 +21,7 @@ import {
   analyzeViaEnclave,
   attestationMode,
   fetchQuorumPublicKey,
+  mergeLocalCacheTokens,
   mergeLocalV2Metrics,
   parseCiphertextEnvelope,
   shouldPreserveV2,
@@ -236,7 +237,10 @@ app.get('/api/me', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, created_at, project_hash,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_output_tokens, web_search_requests, web_fetch_requests,
+            subagent_input_tokens, subagent_output_tokens, subagent_cache_read_tokens,
+            subagent_cache_creation_tokens, models, tool_counts, verification, created_at, project_hash,
             loc_added, loc_removed, languages, command_counts, human_turns, agenticity, longest_run,
             parallel_batches, delegation_calls, verified_edit_cycles, red_green_cycles, outcome,
             skills, mcp_servers, background_tasks
@@ -410,16 +414,6 @@ app.post('/api/passports/:id/sessions', async (c) => {
     if (len > MAX_PLAINTEXT_BODY_BYTES) return c.json({ error: 'file too large (max 25 MB)' }, 413)
   }
 
-  // Cheap abuse guard, ahead of any analysis work (local or enclave), on
-  // every upload branch.
-  const sessionCount = await c.env.DB.prepare(
-    'SELECT COUNT(*) as count FROM sessions WHERE passport_id = ?',
-  )
-    .bind(id)
-    .first<{ count: number }>()
-  if (sessionQuotaExceeded(sessionCount?.count ?? 0))
-    return c.json({ error: 'session limit reached for this passport (1000)' }, 429)
-
   let text = ''
   let rawBytes: Uint8Array | null = null
   if (isRawBody) {
@@ -442,6 +436,10 @@ app.post('/api/passports/:id/sessions', async (c) => {
   // v2 merge — signals the UPDATE path to leave existing v2 columns alone
   // rather than overwrite a real stored value with zeros.
   let preserveV2 = false
+  // Same idea for the v3 cache-token fields: a pre-v3 enclave response
+  // zero-fills them, and without a local merge those zeros must not
+  // overwrite previously-stored values on re-upload.
+  let preserveCache = false
 
   // Raw binary path: the browser encrypted a binary envelope
   // (passport id + trace, canonicalized) to the quorum key and posts the
@@ -457,6 +455,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
       proof = JSON.stringify(analysis.proof)
       ciphertextBytes = rawBytes
       preserveV2 = shouldPreserveV2(analysis, false)
+      preserveCache = !analysis.hasV3Metrics
     } catch (e) {
       if (e instanceof VerifierError) return c.json({ error: e.message }, e.status as 400 | 422)
       throw e
@@ -489,6 +488,7 @@ app.post('/api/passports/:id/sessions', async (c) => {
       // parse), so an old enclave's zero-filled v2 fields must not
       // overwrite a previously-stored v2 row.
       preserveV2 = shouldPreserveV2(analysis, false)
+      preserveCache = !analysis.hasV3Metrics
     } catch (e) {
       if (e instanceof VerifierError) return c.json({ error: e.message }, e.status as 400)
       throw e
@@ -511,15 +511,24 @@ app.post('/api/passports/:id/sessions', async (c) => {
         // zeros for loc/language/agenticity/outcome/etc. Never fail the
         // upload over this — the enclave's v1 stats and proof still stand.
         let merged = false
-        if (!result.analysis.hasV2Metrics) {
+        let cacheMerged = false
+        if (!result.analysis.hasV2Metrics || !result.analysis.hasV3Metrics) {
           try {
-            stats = mergeLocalV2Metrics(stats, parseTrace(text))
-            merged = true
+            const local = parseTrace(text)
+            if (!result.analysis.hasV2Metrics) {
+              stats = mergeLocalV2Metrics(stats, local)
+              merged = true
+            }
+            if (!result.analysis.hasV3Metrics) {
+              stats = mergeLocalCacheTokens(stats, local)
+              cacheMerged = true
+            }
           } catch {
             // keep the zero-filled enclave stats
           }
         }
         preserveV2 = shouldPreserveV2(result.analysis, merged)
+        preserveCache = !result.analysis.hasV3Metrics && !cacheMerged
       } catch (e) {
         // 422 = the enclave parsed the trace and rejected it as invalid.
         if (e instanceof VerifierError && e.status === 422)
@@ -542,6 +551,22 @@ app.post('/api/passports/:id/sessions', async (c) => {
   )
     .bind(id, stats.externalId)
     .first<{ id: string }>()
+
+  // Abuse guard on NEW sessions only. Re-uploads of a known session must
+  // always go through — reprocessing is the only way to repair rows written
+  // by older parser/enclave builds, including for passports already over
+  // quota. (This runs after analysis by necessity: the external id that
+  // identifies a re-upload isn't known until the trace is parsed, and on
+  // encrypted paths only the enclave can produce it.)
+  if (!existing) {
+    const sessionCount = await c.env.DB.prepare(
+      'SELECT COUNT(*) as count FROM sessions WHERE passport_id = ?',
+    )
+      .bind(id)
+      .first<{ count: number }>()
+    if (sessionQuotaExceeded(sessionCount?.count ?? 0))
+      return c.json({ error: 'session limit reached for this passport (1000)' }, 429)
+  }
 
   // Keep the quorum-encrypted trace for future re-verification. Only the
   // enclave can decrypt it; the Worker and R2 never hold plaintext at rest.
@@ -594,7 +619,16 @@ app.post('/api/passports/:id/sessions', async (c) => {
     } else {
       await c.env.DB.prepare(
         `UPDATE sessions SET started_at = ?, ended_at = ?, message_count = ?,
-           tool_call_count = ?, input_tokens = ?, output_tokens = ?, models = ?,
+           tool_call_count = ?, input_tokens = ?, output_tokens = ?,
+           cache_read_tokens = COALESCE(?, cache_read_tokens),
+           cache_creation_tokens = COALESCE(?, cache_creation_tokens),
+           reasoning_output_tokens = COALESCE(?, reasoning_output_tokens),
+           web_search_requests = COALESCE(?, web_search_requests),
+           web_fetch_requests = COALESCE(?, web_fetch_requests),
+           subagent_input_tokens = COALESCE(?, subagent_input_tokens),
+           subagent_output_tokens = COALESCE(?, subagent_output_tokens),
+           subagent_cache_read_tokens = COALESCE(?, subagent_cache_read_tokens),
+           subagent_cache_creation_tokens = COALESCE(?, subagent_cache_creation_tokens), models = ?,
            tool_counts = ?, verification = ?, proof = ?, r2_key = COALESCE(?, r2_key),
            project_hash = ?, loc_added = ?, loc_removed = ?, languages = ?, command_counts = ?,
            human_turns = ?, agenticity = ?, longest_run = ?, parallel_batches = ?,
@@ -608,6 +642,15 @@ app.post('/api/passports/:id/sessions', async (c) => {
           stats.toolCallCount,
           stats.inputTokens,
           stats.outputTokens,
+          preserveCache ? null : stats.cacheReadTokens,
+          preserveCache ? null : stats.cacheCreationTokens,
+          preserveCache ? null : stats.reasoningOutputTokens,
+          preserveCache ? null : stats.webSearchRequests,
+          preserveCache ? null : stats.webFetchRequests,
+          preserveCache ? null : stats.subagentInputTokens,
+          preserveCache ? null : stats.subagentOutputTokens,
+          preserveCache ? null : stats.subagentCacheReadTokens,
+          preserveCache ? null : stats.subagentCacheCreationTokens,
           JSON.stringify(stats.models),
           JSON.stringify(stats.toolCounts),
           verification,
@@ -646,11 +689,14 @@ app.post('/api/passports/:id/sessions', async (c) => {
     `INSERT INTO sessions
       (id, passport_id, harness, external_id, started_at, ended_at,
        message_count, tool_call_count, input_tokens, output_tokens,
+       cache_read_tokens, cache_creation_tokens, reasoning_output_tokens,
+       web_search_requests, web_fetch_requests, subagent_input_tokens,
+       subagent_output_tokens, subagent_cache_read_tokens, subagent_cache_creation_tokens,
        models, tool_counts, created_at, verification, proof, r2_key, project_hash,
        loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
        longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
        red_green_cycles, outcome, skills, mcp_servers, background_tasks)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       crypto.randomUUID(),
@@ -663,6 +709,15 @@ app.post('/api/passports/:id/sessions', async (c) => {
       stats.toolCallCount,
       stats.inputTokens,
       stats.outputTokens,
+      stats.cacheReadTokens,
+      stats.cacheCreationTokens,
+      stats.reasoningOutputTokens,
+      stats.webSearchRequests,
+      stats.webFetchRequests,
+      stats.subagentInputTokens,
+      stats.subagentOutputTokens,
+      stats.subagentCacheReadTokens,
+      stats.subagentCacheCreationTokens,
       JSON.stringify(stats.models),
       JSON.stringify(stats.toolCounts),
       new Date().toISOString(),
@@ -966,7 +1021,10 @@ app.get('/api/passports/slug/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, external_id, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, verification, proof, project_hash,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_output_tokens, web_search_requests, web_fetch_requests,
+            subagent_input_tokens, subagent_output_tokens, subagent_cache_read_tokens,
+            subagent_cache_creation_tokens, models, tool_counts, verification, proof, project_hash,
             loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
             longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
             red_green_cycles, outcome, skills, mcp_servers, background_tasks
@@ -1060,7 +1118,10 @@ app.get('/og/:slug', async (c) => {
     if (!passport) return c.json({ error: 'not found' }, 404)
     const { results } = await c.env.DB.prepare(
       `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-              input_tokens, output_tokens, models, tool_counts, project_hash,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_output_tokens, web_search_requests, web_fetch_requests,
+            subagent_input_tokens, subagent_output_tokens, subagent_cache_read_tokens,
+            subagent_cache_creation_tokens, models, tool_counts, project_hash,
               loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
               longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
               red_green_cycles, outcome, skills, mcp_servers, background_tasks
@@ -1118,7 +1179,10 @@ app.get('/p/:slug', async (c) => {
 
   const { results } = await c.env.DB.prepare(
     `SELECT harness, started_at, ended_at, message_count, tool_call_count,
-            input_tokens, output_tokens, models, tool_counts, project_hash,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            reasoning_output_tokens, web_search_requests, web_fetch_requests,
+            subagent_input_tokens, subagent_output_tokens, subagent_cache_read_tokens,
+            subagent_cache_creation_tokens, models, tool_counts, project_hash,
             loc_added, loc_removed, languages, command_counts, human_turns, agenticity,
             longest_run, parallel_batches, delegation_calls, verified_edit_cycles,
             red_green_cycles, outcome, skills, mcp_servers, background_tasks

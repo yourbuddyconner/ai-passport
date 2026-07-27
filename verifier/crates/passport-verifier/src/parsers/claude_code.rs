@@ -10,7 +10,7 @@ use super::heuristics::{
 };
 use super::{ParseError, SessionStats, project_hash};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const KNOWN_TYPES: [&str; 5] = [
     "user",
@@ -63,8 +63,19 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
     let mut ended_at: Option<String> = None;
     let mut message_count: u64 = 0;
     let mut tool_call_count: u64 = 0;
-    let mut input_tokens: u64 = 0;
-    let mut output_tokens: u64 = 0;
+    // Claude Code splits one API response across several JSONL lines (one per
+    // content block), repeating the same usage object and requestId on each.
+    // Usage and message_count therefore dedupe on requestId (falling back to
+    // message.id, then to a per-line key): max per field per request, summed
+    // after the loop. Max (not first-wins) also absorbs the rare trace where
+    // usage grows across lines of one request.
+    let mut usage_by_request: HashMap<String, [u64; 6]> = HashMap::new();
+    let mut assistant_messages: HashSet<String> = HashSet::new();
+    let mut subagents_seen: HashSet<String> = HashSet::new();
+    let mut subagent_input_tokens: u64 = 0;
+    let mut subagent_output_tokens: u64 = 0;
+    let mut subagent_cache_read_tokens: u64 = 0;
+    let mut subagent_cache_creation_tokens: u64 = 0;
     let mut models: BTreeSet<String> = BTreeSet::new();
     let mut tool_counts: BTreeMap<String, u64> = BTreeMap::new();
 
@@ -127,7 +138,40 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
         if line_type != Some("user") && line_type != Some("assistant") {
             continue;
         }
-        message_count += 1;
+        if line_type == Some("user") {
+            message_count += 1;
+        } else {
+            let key = o
+                .get("requestId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    o.get("message")
+                        .and_then(|m| m.get("id"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("line-{seq}"));
+            if assistant_messages.insert(key.clone()) {
+                message_count += 1;
+            }
+            if let Some(usage) = o.get("message").and_then(|m| m.get("usage")) {
+                let field = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+                let server_tool = |name: &str| {
+                    usage
+                        .get("server_tool_use")
+                        .and_then(|s| s.get(name))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                };
+                let entry = usage_by_request.entry(key).or_insert([0; 6]);
+                entry[0] = entry[0].max(field("input_tokens"));
+                entry[1] = entry[1].max(field("output_tokens"));
+                entry[2] = entry[2].max(field("cache_read_input_tokens"));
+                entry[3] = entry[3].max(field("cache_creation_input_tokens"));
+                entry[4] = entry[4].max(server_tool("web_search_requests"));
+                entry[5] = entry[5].max(server_tool("web_fetch_requests"));
+            }
+        }
 
         if is_human_prompt(&o) {
             human_turns += 1;
@@ -146,16 +190,6 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
                 && !model.starts_with('<')
             {
                 models.insert(model.to_string());
-            }
-            if let Some(usage) = message.get("usage") {
-                input_tokens += usage
-                    .get("input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                output_tokens += usage
-                    .get("output_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
             }
             let request_id = o.get("requestId").and_then(Value::as_str);
             if let Some(content) = message.get("content").and_then(Value::as_array) {
@@ -261,6 +295,26 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
             }
 
             if let Some(r) = o.get("toolUseResult") {
+                // Completed subagent (Task) result: sum its usage once per
+                // agentId. async_launched results carry no usage; a later
+                // completion re-post for the same agentId is deduped.
+                if r.get("status").and_then(Value::as_str) == Some("completed")
+                    && let Some(usage) = r.get("usage")
+                {
+                    let agent_key = r
+                        .get("agentId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("line-{seq}"));
+                    if subagents_seen.insert(agent_key) {
+                        let field =
+                            |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+                        subagent_input_tokens += field("input_tokens");
+                        subagent_output_tokens += field("output_tokens");
+                        subagent_cache_read_tokens += field("cache_read_input_tokens");
+                        subagent_cache_creation_tokens += field("cache_creation_input_tokens");
+                    }
+                }
                 let structured_patch = r.get("structuredPatch").and_then(Value::as_array);
                 let r_type = r.get("type").and_then(Value::as_str);
                 if structured_patch.is_some() || r_type == Some("create") {
@@ -331,6 +385,21 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
         ));
     }
 
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cache_read_tokens: u64 = 0;
+    let mut cache_creation_tokens: u64 = 0;
+    let mut web_search_requests: u64 = 0;
+    let mut web_fetch_requests: u64 = 0;
+    for [inp, out, read, create, search, fetch] in usage_by_request.values() {
+        input_tokens += inp;
+        output_tokens += out;
+        cache_read_tokens += read;
+        cache_creation_tokens += create;
+        web_search_requests += search;
+        web_fetch_requests += fetch;
+    }
+
     let run_values: Vec<f64> = runs.iter().map(|&r| r as f64).collect();
     let agenticity = median(&run_values);
     let longest_run = runs.iter().copied().max().unwrap_or(0);
@@ -346,6 +415,15 @@ pub(super) fn parse(lines: impl Iterator<Item = Value>) -> Result<SessionStats, 
         tool_call_count,
         input_tokens,
         output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        reasoning_output_tokens: 0,
+        web_search_requests,
+        web_fetch_requests,
+        subagent_input_tokens,
+        subagent_output_tokens,
+        subagent_cache_read_tokens,
+        subagent_cache_creation_tokens,
         models: models.into_iter().collect(),
         tool_counts,
         project_hash: cwd.as_deref().map(project_hash),
@@ -464,6 +542,72 @@ mod tests {
         assert_eq!(s.skills, vec!["dataviz".to_string()]);
         assert_eq!(s.mcp_servers, vec!["claude-in-chrome".to_string()]);
         assert_eq!(s.background_tasks, 1); // t6 run_in_background
+    }
+
+    #[test]
+    fn dedupes_usage_and_messages_across_lines_of_one_request() {
+        // Claude Code writes one JSONL line per content block and repeats the
+        // same usage object on every line of the same API request (same
+        // requestId). Usage and message_count must count once per request,
+        // not once per line; lines without a requestId fall back to
+        // message.id, then to per-line counting.
+        let usage = json!({ "input_tokens": 100, "output_tokens": 40,
+            "cache_read_input_tokens": 900, "cache_creation_input_tokens": 30,
+            "server_tool_use": { "web_search_requests": 2, "web_fetch_requests": 1 } });
+        let lines = vec![
+            json!({ "type": "user", "sessionId": "s4", "message": { "content": "go" } }),
+            json!({ "type": "assistant", "sessionId": "s4", "requestId": "r1",
+                "message": { "id": "m1", "usage": usage,
+                    "content": [{ "type": "thinking", "thinking": "..." }] } }),
+            json!({ "type": "assistant", "sessionId": "s4", "requestId": "r1",
+                "message": { "id": "m1", "usage": usage,
+                    "content": [{ "type": "text", "text": "hi" }] } }),
+            json!({ "type": "assistant", "sessionId": "s4", "requestId": "r1",
+                "message": { "id": "m1", "usage": usage,
+                    "content": [{ "type": "tool_use", "id": "t1", "name": "Read", "input": {} }] } }),
+            // no requestId → message.id fallback dedupes these two lines
+            json!({ "type": "assistant", "sessionId": "s4",
+                "message": { "id": "m2", "usage": { "input_tokens": 7, "output_tokens": 3 },
+                    "content": [{ "type": "text", "text": "a" }] } }),
+            json!({ "type": "assistant", "sessionId": "s4",
+                "message": { "id": "m2", "usage": { "input_tokens": 7, "output_tokens": 3 },
+                    "content": [{ "type": "tool_use", "id": "t2", "name": "Bash", "input": { "command": "ls" } }] } }),
+            // neither requestId nor message.id → counted per line
+            json!({ "type": "assistant", "sessionId": "s4",
+                "message": { "usage": { "input_tokens": 1, "output_tokens": 2 }, "content": [] } }),
+            // completed subagent (Task) result: usage summed into subagent_* once
+            json!({ "type": "user", "sessionId": "s4",
+                "toolUseResult": { "status": "completed", "agentId": "a1",
+                    "usage": { "input_tokens": 5, "output_tokens": 500,
+                        "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 20 } },
+                "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1" }] } }),
+            // same agentId re-posted (async completion) → not double-counted
+            json!({ "type": "user", "sessionId": "s4",
+                "toolUseResult": { "status": "completed", "agentId": "a1",
+                    "usage": { "input_tokens": 5, "output_tokens": 500,
+                        "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 20 } },
+                "message": { "content": [{ "type": "tool_result", "tool_use_id": "t1b" }] } }),
+            // async launch carries no usage → ignored
+            json!({ "type": "user", "sessionId": "s4",
+                "toolUseResult": { "status": "async_launched", "agentId": "a2" },
+                "message": { "content": [{ "type": "tool_result", "tool_use_id": "t2b" }] } }),
+        ];
+        let s = parse_lines(lines);
+        assert_eq!(s.input_tokens, 108); // 100 + 7 + 1, not 100*3 + 7*2 + 1
+        assert_eq!(s.output_tokens, 45); // 40 + 3 + 2
+        assert_eq!(s.cache_read_tokens, 900);
+        assert_eq!(s.cache_creation_tokens, 30);
+        assert_eq!(s.web_search_requests, 2); // once per request, not per line
+        assert_eq!(s.web_fetch_requests, 1);
+        assert_eq!(s.subagent_input_tokens, 5); // a1 once; async a2 ignored
+        assert_eq!(s.subagent_output_tokens, 500);
+        assert_eq!(s.subagent_cache_read_tokens, 1000);
+        assert_eq!(s.subagent_cache_creation_tokens, 20);
+        assert_eq!(s.reasoning_output_tokens, 0); // codex-only signal
+        // user + r1 + m2 + keyless + 3 result lines = 7 logical messages
+        assert_eq!(s.message_count, 7);
+        // tool blocks are never duplicated across lines — still 2 calls
+        assert_eq!(s.tool_call_count, 2);
     }
 
     #[test]

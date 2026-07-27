@@ -6,6 +6,16 @@ export interface SessionRow {
   tool_call_count: number
   input_tokens: number
   output_tokens: number
+  /* Optional: absent from rows written before migration 0008. */
+  cache_read_tokens?: number
+  cache_creation_tokens?: number
+  reasoning_output_tokens?: number
+  web_search_requests?: number
+  web_fetch_requests?: number
+  subagent_input_tokens?: number
+  subagent_output_tokens?: number
+  subagent_cache_read_tokens?: number
+  subagent_cache_creation_tokens?: number
   models: string
   tool_counts: string
   project_hash?: string | null
@@ -43,6 +53,15 @@ export interface CardData {
   totalToolCalls: number
   totalInputTokens: number
   totalOutputTokens: number
+  totalCacheReadTokens: number
+  totalCacheCreationTokens: number
+  totalReasoningOutputTokens: number
+  totalWebSearchRequests: number
+  totalWebFetchRequests: number
+  totalSubagentInputTokens: number
+  totalSubagentOutputTokens: number
+  totalSubagentCacheReadTokens: number
+  totalSubagentCacheCreationTokens: number
   activeHours: number
   activeDays: number
   firstActivity: string | null
@@ -121,6 +140,15 @@ export function aggregate(rows: SessionRow[]): CardData {
   let totalToolCalls = 0
   let totalInput = 0
   let totalOutput = 0
+  let totalCacheRead = 0
+  let totalCacheCreation = 0
+  let totalReasoning = 0
+  let totalWebSearch = 0
+  let totalWebFetch = 0
+  let totalSubagentInput = 0
+  let totalSubagentOutput = 0
+  let totalSubagentCacheRead = 0
+  let totalSubagentCacheCreation = 0
   let activeMs = 0
   let first: string | null = null
   let last: string | null = null
@@ -145,6 +173,15 @@ export function aggregate(rows: SessionRow[]): CardData {
     totalToolCalls += r.tool_call_count
     totalInput += r.input_tokens
     totalOutput += r.output_tokens
+    totalCacheRead += r.cache_read_tokens ?? 0
+    totalCacheCreation += r.cache_creation_tokens ?? 0
+    totalReasoning += r.reasoning_output_tokens ?? 0
+    totalWebSearch += r.web_search_requests ?? 0
+    totalWebFetch += r.web_fetch_requests ?? 0
+    totalSubagentInput += r.subagent_input_tokens ?? 0
+    totalSubagentOutput += r.subagent_output_tokens ?? 0
+    totalSubagentCacheRead += r.subagent_cache_read_tokens ?? 0
+    totalSubagentCacheCreation += r.subagent_cache_creation_tokens ?? 0
     for (const m of JSON.parse(r.models || '[]') as string[]) models.add(m)
     const counts = JSON.parse(r.tool_counts || '{}') as Record<string, number>
     for (const [name, n] of Object.entries(counts)) {
@@ -214,6 +251,15 @@ export function aggregate(rows: SessionRow[]): CardData {
     totalToolCalls,
     totalInputTokens: totalInput,
     totalOutputTokens: totalOutput,
+    totalCacheReadTokens: totalCacheRead,
+    totalCacheCreationTokens: totalCacheCreation,
+    totalReasoningOutputTokens: totalReasoning,
+    totalWebSearchRequests: totalWebSearch,
+    totalWebFetchRequests: totalWebFetch,
+    totalSubagentInputTokens: totalSubagentInput,
+    totalSubagentOutputTokens: totalSubagentOutput,
+    totalSubagentCacheReadTokens: totalSubagentCacheRead,
+    totalSubagentCacheCreationTokens: totalSubagentCacheCreation,
     activeHours: Math.round((activeMs / 3_600_000) * 10) / 10,
     activeDays: days.size,
     firstActivity: first,

@@ -28,6 +28,13 @@ export interface EnclaveAnalysis {
    * false rather than trust the zeros.
    */
   hasV2Metrics: boolean
+  /**
+   * Whether the raw enclave response carried the v3 cache-token fields.
+   * Pre-v3 builds omit them and mapRustStats() zero-fills — callers should
+   * backfill from a local parse (plaintext path) or preserve stored values
+   * (re-upload) rather than persist the zeros.
+   */
+  hasV3Metrics: boolean
 }
 
 export class VerifierError extends Error {
@@ -95,6 +102,15 @@ export interface RustSessionStats {
   tool_call_count: number | string
   input_tokens: number | string
   output_tokens: number | string
+  cache_read_tokens?: number | string
+  cache_creation_tokens?: number | string
+  reasoning_output_tokens?: number | string
+  web_search_requests?: number | string
+  web_fetch_requests?: number | string
+  subagent_input_tokens?: number | string
+  subagent_output_tokens?: number | string
+  subagent_cache_read_tokens?: number | string
+  subagent_cache_creation_tokens?: number | string
   models: string[]
   tool_counts: Record<string, number | string>
   loc_added?: number | string
@@ -127,6 +143,39 @@ function numberRecord(rec: Record<string, number | string> | undefined): Record<
  */
 export function hasV2Metrics(s: RustSessionStats): boolean {
   return s.loc_added !== undefined
+}
+
+/**
+ * True when the raw enclave stats carried the v3 cache-token fields. Like
+ * `loc_added` for v2, `cache_read_tokens` is always present (possibly `0`)
+ * on v3 builds and always absent before them.
+ */
+export function hasV3Metrics(s: RustSessionStats): boolean {
+  return s.cache_read_tokens !== undefined
+}
+
+/**
+ * Copy only the v3 metric fields (cache tokens, reasoning tokens, web tool
+ * counts, subagent spend) from a locally-parsed trace onto enclave-derived
+ * stats, for pre-v3 enclave responses. The enclave's v1 numbers (tokens
+ * in/out, messages), verification level, and proof stay untouched.
+ */
+export function mergeLocalCacheTokens(
+  enclaveStats: SessionStats,
+  localStats: SessionStats,
+): SessionStats {
+  return {
+    ...enclaveStats,
+    cacheReadTokens: localStats.cacheReadTokens,
+    cacheCreationTokens: localStats.cacheCreationTokens,
+    reasoningOutputTokens: localStats.reasoningOutputTokens,
+    webSearchRequests: localStats.webSearchRequests,
+    webFetchRequests: localStats.webFetchRequests,
+    subagentInputTokens: localStats.subagentInputTokens,
+    subagentOutputTokens: localStats.subagentOutputTokens,
+    subagentCacheReadTokens: localStats.subagentCacheReadTokens,
+    subagentCacheCreationTokens: localStats.subagentCacheCreationTokens,
+  }
 }
 
 /**
@@ -186,6 +235,15 @@ export function mapRustStats(s: RustSessionStats): SessionStats {
     toolCallCount: Number(s.tool_call_count),
     inputTokens: Number(s.input_tokens),
     outputTokens: Number(s.output_tokens),
+    cacheReadTokens: Number(s.cache_read_tokens ?? 0),
+    cacheCreationTokens: Number(s.cache_creation_tokens ?? 0),
+    reasoningOutputTokens: Number(s.reasoning_output_tokens ?? 0),
+    webSearchRequests: Number(s.web_search_requests ?? 0),
+    webFetchRequests: Number(s.web_fetch_requests ?? 0),
+    subagentInputTokens: Number(s.subagent_input_tokens ?? 0),
+    subagentOutputTokens: Number(s.subagent_output_tokens ?? 0),
+    subagentCacheReadTokens: Number(s.subagent_cache_read_tokens ?? 0),
+    subagentCacheCreationTokens: Number(s.subagent_cache_creation_tokens ?? 0),
     models: s.models,
     toolCounts: numberRecord(s.tool_counts),
     projectHash: s.project_hash ?? null,
@@ -284,6 +342,7 @@ async function handleAnalyzeResponse(
     analyzedAt: Number(signed.analyzed_at),
     proof: result.proof,
     hasV2Metrics: hasV2Metrics(signed.stats),
+    hasV3Metrics: hasV3Metrics(signed.stats),
   }
 }
 

@@ -29,10 +29,25 @@ interface ClaudeLine {
     filePath?: string
     content?: string
     structuredPatch?: Array<{ lines?: string[] }>
+    status?: string
+    agentId?: string
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
+    }
   }
   message?: {
+    id?: string
     model?: string
-    usage?: { input_tokens?: number; output_tokens?: number }
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      cache_read_input_tokens?: number
+      cache_creation_input_tokens?: number
+      server_tool_use?: { web_search_requests?: number; web_fetch_requests?: number }
+    }
     content?: ContentBlock[] | string
   }
 }
@@ -72,6 +87,15 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
     toolCallCount: 0,
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    reasoningOutputTokens: 0,
+    webSearchRequests: 0,
+    webFetchRequests: 0,
+    subagentInputTokens: 0,
+    subagentOutputTokens: 0,
+    subagentCacheReadTokens: 0,
+    subagentCacheCreationTokens: 0,
     models: [],
     toolCounts: {},
     locAdded: 0,
@@ -91,6 +115,15 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
     backgroundTasks: 0,
   }
   const models = new Set<string>()
+  // Claude Code splits one API response across several JSONL lines (one per
+  // content block), repeating the same usage object and requestId on each.
+  // Usage and messageCount therefore dedupe on requestId (falling back to
+  // message.id, then to a per-line key): max per field per request, summed
+  // after the loop. Max (not first-wins) also absorbs the rare trace where
+  // usage grows across lines of one request.
+  const usageByRequest = new Map<string, [number, number, number, number, number, number]>()
+  const assistantMessages = new Set<string>()
+  const subagentsSeen = new Set<string>()
   const skills = new Set<string>()
   const mcpServers = new Set<string>()
   const requestCounts = new Map<string, number>()
@@ -117,7 +150,26 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
     if (o.attributionSkill) skills.add(String(o.attributionSkill))
     if (o.attributionMcpServer) mcpServers.add(String(o.attributionMcpServer))
     if (o.type !== 'user' && o.type !== 'assistant') continue
-    stats.messageCount++
+    if (o.type === 'user') {
+      stats.messageCount++
+    } else {
+      const key = o.requestId ?? o.message?.id ?? `line-${seq}`
+      if (!assistantMessages.has(key)) {
+        assistantMessages.add(key)
+        stats.messageCount++
+      }
+      const u = o.message?.usage
+      if (u) {
+        const entry = usageByRequest.get(key) ?? [0, 0, 0, 0, 0, 0]
+        entry[0] = Math.max(entry[0], u.input_tokens ?? 0)
+        entry[1] = Math.max(entry[1], u.output_tokens ?? 0)
+        entry[2] = Math.max(entry[2], u.cache_read_input_tokens ?? 0)
+        entry[3] = Math.max(entry[3], u.cache_creation_input_tokens ?? 0)
+        entry[4] = Math.max(entry[4], u.server_tool_use?.web_search_requests ?? 0)
+        entry[5] = Math.max(entry[5], u.server_tool_use?.web_fetch_requests ?? 0)
+        usageByRequest.set(key, entry)
+      }
+    }
 
     if (isHumanPrompt(o)) {
       stats.humanTurns++
@@ -129,11 +181,6 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
     if (o.type === 'assistant' && o.message) {
       // Claude Code marks system-generated lines with model "<synthetic>".
       if (o.message.model && !o.message.model.startsWith('<')) models.add(o.message.model)
-      const u = o.message.usage
-      if (u) {
-        stats.inputTokens += u.input_tokens ?? 0
-        stats.outputTokens += u.output_tokens ?? 0
-      }
       if (Array.isArray(o.message.content)) {
         for (const block of o.message.content) {
           if (block?.type !== 'tool_use' || !block.name) continue
@@ -191,6 +238,19 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
         }
       }
       const r = o.toolUseResult
+      // Completed subagent (Task) result: sum its usage once per agentId.
+      // async_launched results carry no usage; a later completion re-post
+      // for the same agentId is deduped.
+      if (r?.usage && r.status === 'completed') {
+        const agentKey = r.agentId ?? `line-${seq}`
+        if (!subagentsSeen.has(agentKey)) {
+          subagentsSeen.add(agentKey)
+          stats.subagentInputTokens += r.usage.input_tokens ?? 0
+          stats.subagentOutputTokens += r.usage.output_tokens ?? 0
+          stats.subagentCacheReadTokens += r.usage.cache_read_input_tokens ?? 0
+          stats.subagentCacheCreationTokens += r.usage.cache_creation_input_tokens ?? 0
+        }
+      }
       if (r && (Array.isArray(r.structuredPatch) || r.type === 'create')) {
         let add = 0
         let rem = 0
@@ -223,6 +283,14 @@ export function parseClaudeCode(lines: Iterable<unknown>): SessionStats {
   }
 
   if (currentRun > 0) runs.push(currentRun)
+  for (const [inp, out, read, create, search, fetch] of usageByRequest.values()) {
+    stats.inputTokens += inp
+    stats.outputTokens += out
+    stats.cacheReadTokens += read
+    stats.cacheCreationTokens += create
+    stats.webSearchRequests += search
+    stats.webFetchRequests += fetch
+  }
   if (!stats.externalId) throw new ParseError('No sessionId found in Claude Code trace')
   if (stats.messageCount === 0) throw new ParseError('No messages found in Claude Code trace')
   stats.models = [...models]
