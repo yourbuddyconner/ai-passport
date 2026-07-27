@@ -1,7 +1,7 @@
 {
   "appId": "b6be5c24-6101-4b30-8ded-86e330edb46d",
   "qosVersion": "0.12.1",
-  "pivotContainerImageUrl": "ghcr.io/yourbuddyconner/ai-passport-verifier:v0.4.2",
+  "pivotContainerImageUrl": "ghcr.io/yourbuddyconner/ai-passport-verifier:v0.5.0",
   "pivotPath": "/tvc_app",
   "pivotArgs": [
     "--host",
@@ -9,7 +9,7 @@
     "--port",
     "3000"
   ],
-  "expectedPivotDigest": "0779f47acfe24284c56215955e613ed7cb4f7b518dbcb1b7a8e5060d4789311e",
+  "expectedPivotDigest": "a15713a9e3db912dd14e33917ae456faecbbe067168ebca9ed75ea48c8261841",
   "dangerousDeployDebugMode": false,
   "healthCheckType": "TVC_HEALTH_CHECK_TYPE_HTTP",
   "healthCheckPort": 3000,
